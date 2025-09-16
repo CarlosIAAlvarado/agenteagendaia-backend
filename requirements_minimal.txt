@@ -1,0 +1,17 @@
+# Dependencias mínimas para Agenda IA
+fastapi
+uvicorn[standard]
+motor
+pymongo
+openai
+pydantic
+pydantic-settings
+python-dotenv
+websockets
+email-validator
+python-jose[cryptography]
+chromadb
+sentence-transformers
+numpy
+aiofiles
+requests

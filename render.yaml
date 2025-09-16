@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: agenteagendaia-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    plan: free
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: false
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        fromService:
+          type: web
+          name: agenteagendaia-backend
+          property: port
+      - key: MONGODB_URI
+        sync: false  # Configura esto en el dashboard de Render
+      - key: DATABASE_NAME
+        value: Agenda_Ai
+      - key: SECRET_KEY
+        generateValue: true  # Render generará una clave secreta
+      - key: OPENAI_API_KEY
+        sync: false  # Configura esto en el dashboard de Render
+      - key: ALLOWED_ORIGINS
+        value: "*"  # Configura tus dominios específicos en producción
+      - key: LINK_BASE_URL
+        value: https://agenteagendaia-backend.onrender.com

@@ -1,0 +1,147 @@
+# ========================================
+# AGENDA IA - Backend .gitignore
+# ========================================
+
+# === ARCHIVOS DE ENTORNO ===
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+
+# === CREDENCIALES Y CONFIGURACIÓN SENSIBLE ===
+google_credentials.json
+*.pem
+*.key
+*.crt
+secrets.json
+
+# === PYTHON ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# === ENTORNOS VIRTUALES ===
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# === JUPYTER NOTEBOOK ===
+.ipynb_checkpoints
+
+# === PYENV ===
+.python-version
+
+# === PIPENV ===
+Pipfile.lock
+
+# === POETRY ===
+poetry.lock
+
+# === CELERY ===
+celerybeat-schedule
+celerybeat.pid
+
+# === COVERAGE ===
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# === MYPY ===
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# === PYRE ===
+.pyre/
+
+# === PYTYPE ===
+.pytype/
+
+# === BASE DE DATOS VECTORIAL ===
+chroma_db/
+vector_store/
+embeddings/
+
+# === LOGS ===
+logs/
+*.log
+log.txt
+
+# === ARCHIVOS TEMPORALES ===
+temp/
+tmp/
+*.tmp
+*.temp
+
+# === ARCHIVOS DE SISTEMA ===
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# === EDITORES E IDEs ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === ARCHIVOS DE RESPALDO ===
+*.bak
+*.backup
+*.old
+
+# === ARCHIVOS DE DATOS DE PRUEBA ===
+test_data/
+sample_data/
+
+# === DOCUMENTOS DE DESARROLLO ===
+dev_notes.md
+TODO.md
+NOTES.txt
+
+# === ARCHIVOS ESPECÍFICOS DEL PROYECTO ===
+test_service_creation.py
+test_service_unique.py
+populate_realistic_data.py
+analyze_database.py
+clean_*.py
+remove_*.py
+init_super_admin.py
