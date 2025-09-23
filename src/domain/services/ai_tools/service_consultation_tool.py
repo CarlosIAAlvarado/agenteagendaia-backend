@@ -83,20 +83,17 @@ class ServiceConsultationTool:
                 
                 logger.info(f"[DEBUG] Final services count after filter: {len(services)}")
             
-            # Agrupar servicios por service_type para mejor visualización
+            # Agrupar servicios por service_type REAL - mostrar el tipo real de servicio
             categories = {}
             for service in services:
-                # Mapear service_type a categorías amigables
-                # Los service_type reales en BD son: "maintenance", "consultation"
-                type_to_category = {
-                    "medical": "consulta",
-                    "beauty": "belleza", 
-                    "consultation": "especialidad",  # "Gastos que existen" → "especialidad" ✅
-                    "maintenance": "terapia",        # "automatizacionvyrtium" → "terapia" ✅
-                    "other": "otros"
-                }
-                
-                cat = type_to_category.get(service.service_type.value, service.service_type.value)
+                # 🔧 MOSTRAR SERVICE_TYPE REAL: En lugar de mapear a categorías genéricas,
+                # mostrar directamente el service_type de la base de datos
+                service_type_real = service.service_type.value
+
+                # Capitalizar para mejor presentación (maintenance → Maintenance)
+                cat = service_type_real.capitalize()
+
+                logger.info(f"[SERVICE_TYPE] Service '{service.name}' has type: '{service_type_real}' → Display: '{cat}'")
                 if cat not in categories:
                     categories[cat] = []
                 
@@ -126,6 +123,7 @@ class ServiceConsultationTool:
             response = {
                 "tool_used": "service_consultation",
                 "action": "show_services",
+                "success": True,  # Añadido para compatibilidad
                 "display_type": "service_catalog",  # Le dice al frontend cómo renderizar
                 "total_services": total_services,
                 "filtered_category": category,
@@ -152,6 +150,12 @@ class ServiceConsultationTool:
                         },
                         "categories": self._format_categories_for_display(categories, service_availability)
                     }
+                },
+                "context_updates": {  # Nuevas actualizaciones de contexto para compatibilidad con nueva herramienta
+                    "services_displayed": True,
+                    "available_services": categories,
+                    "display_type": "service_catalog",
+                    "next_step": "service_selection"
                 },
                 "ai_continues_after": True  # OpenAI sigue controlando después
             }
@@ -289,17 +293,23 @@ class ServiceConsultationTool:
         return formatted_categories
     
     def _get_category_icon(self, category: str) -> str:
-        """Devuelve el icono apropiado para cada categoría"""
+        """Devuelve el icono apropiado para cada service_type real"""
+        # Iconos basados en los service_type reales de la base de datos
         icons = {
-            "general": "GENERAL",
-            "especialidad": "ESPECIALIDAD",
-            "laboratorio": "LABORATORIO",
-            "emergencia": "EMERGENCIA",
-            "consulta": "CONSULTA",
-            "cirugia": "CIRUGIA",
-            "terapia": "TERAPIA"
+            "maintenance": "🔧",         # Para servicios de mantenimiento
+            "consultation": "👨‍⚕️",        # Para consultas médicas
+            "medical": "🏥",             # Para servicios médicos generales
+            "beauty": "💄",              # Para servicios de belleza
+            "therapy": "🧘‍♀️",             # Para terapias
+            "laboratory": "🔬",          # Para laboratorios
+            "emergency": "🚨",           # Para emergencias
+            "surgery": "⚕️",             # Para cirugías
+            "other": "📋"                # Para otros servicios
         }
-        return icons.get(category.lower(), "SERVICIO")
+
+        # Buscar por el nombre real del category (que ahora es el service_type capitalizado)
+        category_lower = category.lower()
+        return icons.get(category_lower, "📋")
     
     def get_tool_info(self) -> Dict[str, Any]:
         """Información sobre esta herramienta para OpenAI Function Calling"""

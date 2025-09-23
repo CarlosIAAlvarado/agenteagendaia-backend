@@ -137,3 +137,8 @@ class IAppointmentRepository(ABC):
     async def get_by_date_range_paginated(self, start_date: datetime, end_date: datetime, skip: int = 0, limit: int = 100) -> List[Appointment]:
         """Get appointments within date range with pagination"""
         pass
+
+    @abstractmethod
+    async def get_by_professional_and_date_range(self, professional_id: str, start_date: date, end_date: date) -> List[Appointment]:
+        """Get appointments for a professional within a date range"""
+        pass

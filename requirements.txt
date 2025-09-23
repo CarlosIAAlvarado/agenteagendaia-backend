@@ -1,35 +1,47 @@
-# Core Framework
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-websockets==12.0
+# Agenda IA - Backend Requirements
+# Python 3.10+ required
+
+# FastAPI Framework
+fastapi==0.115.5
+uvicorn[standard]==0.21.1
+python-multipart==0.0.18
 
 # Database
-pymongo==4.6.1
 motor==3.3.2
-
-# Data Validation
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-email-validator>=2.1.0
+pymongo==4.8.0
 
 # Authentication & Security
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
-
-# Configuration
+bcrypt==4.3.0
 python-dotenv==1.0.1
 
-# OpenAI & AI
-openai>=1.10.0
-tiktoken>=0.6.0
-pydantic-ai==0.0.9
+# AI & LLM
+anthropic==0.64.0
+openai==1.35.10
 
-# Vector Database & Embeddings
-chromadb==0.4.22
-sentence-transformers==2.3.1
+# Data Validation
+pydantic==2.8.2
+pydantic-settings==2.3.4
+email-validator==2.0.0
 
-# Additional Dependencies
-numpy>=1.26.0
-requests>=2.31.0
-aiofiles>=23.2.0
+# Date & Time
+python-dateutil==2.9.0
+
+# CORS
+fastapi-cors==0.0.6
+
+# Development & Testing (optional)
+pytest==8.3.3
+pytest-asyncio==0.25.2
+httpx==0.27.2
+
+# Logging
+loguru==0.7.2
+
+# Environment
+python-decouple==3.8
+
+# Email Support
+aiosmtplib==3.0.1
+jinja2==3.1.4

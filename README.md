@@ -394,46 +394,12 @@ logging.basicConfig(
 python main.py
 
 # Configuración automática:
-# - Host: 0.0.0.0:8000
+# - Host: 0.0.0.0:8000  
 # - Reload: Activado
 # - Docs: /docs disponible
 ```
 
-### Render (Producción)
-Este proyecto está configurado para desplegarse en Render automáticamente:
-
-1. **Subir a GitHub**:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit - Agenda IA Backend"
-   git branch -M main
-   git remote add origin https://github.com/tu-usuario/agenteagendaia-backend.git
-   git push -u origin main
-   ```
-
-2. **Configurar en Render**:
-   - Conecta tu repositorio de GitHub
-   - Render detectará automáticamente `render.yaml`
-   - Configura las siguientes variables de entorno en el dashboard:
-     ```
-     MONGODB_URI=tu_mongodb_atlas_uri
-     OPENAI_API_KEY=tu_openai_api_key
-     SECRET_KEY=clave_secreta_para_jwt
-     ENVIRONMENT=production
-     ```
-
-3. **Variables de entorno requeridas**:
-   ```env
-   MONGODB_URI=mongodb+srv://usuario:password@cluster.mongodb.net/
-   OPENAI_API_KEY=sk-proj-tu-api-key
-   SECRET_KEY=tu-clave-jwt-super-secreta
-   ENVIRONMENT=production
-   DEBUG=false
-   ALLOWED_ORIGINS=https://tu-frontend.com
-   ```
-
-### Producción Manual
+### Producción
 ```bash
 # Usando Uvicorn directamente
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
@@ -444,13 +410,12 @@ gunicorn main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 
 ### Docker
 ```dockerfile
-# Dockerfile para containerización
+# Dockerfile incluido en el proyecto
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
-EXPOSE 8000
 CMD ["python", "main.py"]
 ```
 

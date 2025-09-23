@@ -175,6 +175,11 @@ class ConversationUseCasesV2:
             # Usar contexto real de conversación para mantener continuidad
             agent_context.current_step = conversation.current_step
             agent_context.context_data = conversation.context
+
+            # DEBUG: Log del contexto que se está cargando
+            logger.info(f"[CONTEXT_LOAD] Loading context from conversation: {conversation.context}")
+            logger.info(f"[CONTEXT_LOAD] User registered in context: {conversation.context.get('user_registered', False)}")
+            logger.info(f"[CONTEXT_LOAD] Skip registration: {conversation.context.get('skip_registration_detection', False)}")
             
             # *** CARGAR HISTORIAL CONVERSACIONAL DESDE DB ***
             # Obtener mensajes previos de la conversación para contexto
@@ -281,24 +286,73 @@ class ConversationUseCasesV2:
             
             logger.info(f"Message processed for conversation: {conversation_id}")
             
+            # Función auxiliar para acceder al contexto (compatible con dict y AgentContext)
+            def safe_get_context(context, key, default=None):
+                if hasattr(context, 'get_context'):
+                    return context.get_context(key) or default
+                elif isinstance(context, dict):
+                    return context.get(key, default)
+                else:
+                    return default
+
             # Extract tool response if a tool was used
-            tool_response = updated_context.get('tool_response', {})
-            
-            # Si el usuario ya está registrado, NO enviar datos de formulario
-            if updated_context.get('user_registered', False) or updated_context.get('registration_completed', False):
-                # Limpiar cualquier tool_response que contenga form_config
-                tool_response = {}
-                updated_context['display_type'] = None
-                updated_context['form_config'] = None
-                logger.info("🔧 USER REGISTERED - Clearing all form data from response")
+            tool_response = safe_get_context(updated_context, 'tool_response') or {}
+            logger.info(f"🔧 [DEBUG_1] INITIAL tool_response: {tool_response}")
+            logger.info(f"🔧 [DEBUG_1] updated_context type: {type(updated_context)}")
+            logger.info(f"🔧 [DEBUG_1] display_type in context: {safe_get_context(updated_context, 'display_type')}")
+            logger.info(f"🔧 [DEBUG_1] tool_data in context: {safe_get_context(updated_context, 'tool_data')}")
+            logger.info(f"🔧 [DEBUG_1] tool_used in context: {safe_get_context(updated_context, 'tool_used')}")
+
+            # Función auxiliar para actualizar contexto de manera segura
+            def safe_update_context(context, key, value):
+                if hasattr(context, 'update_context'):
+                    context.update_context(key, value)
+                elif isinstance(context, dict):
+                    context[key] = value
+
+            # Si el usuario ya está registrado, NO enviar datos de formulario de REGISTRO
+            # Pero SÍ permitir otros display_types como service_catalog
+            if safe_get_context(updated_context, 'user_registered') or safe_get_context(updated_context, 'registration_completed'):
+                logger.info(f"🔧 [DEBUG_2] User is registered, checking display_type: {safe_get_context(updated_context, 'display_type')}")
+
+                # Solo limpiar form_config si es un formulario de registro
+                if safe_get_context(updated_context, 'display_type') == 'interactive_form':
+                    tool_response = {}
+                    safe_update_context(updated_context, 'display_type', None)
+                    safe_update_context(updated_context, 'form_config', None)
+                    logger.info("🔧 USER REGISTERED - Clearing registration form data from response")
+                else:
+                    logger.info(f"🔧 [DEBUG_2] NOT clearing data - display_type is: {safe_get_context(updated_context, 'display_type')}")
+                    # IMPORTANT: NO clear tool_response when display_type is NOT 'interactive_form'
+                    # This preserves service_catalog and other display types
+
+                # Para otros display_types (como service_catalog), mantener los datos
                 logger.info(f"🔧 User ID in conversation: {conversation.user_id}")
-            
+
+            logger.info(f"🔧 [DEBUG_3] AFTER user check - tool_response: {tool_response}")
+            logger.info(f"🔧 [DEBUG_3] AFTER user check - display_type: {safe_get_context(updated_context, 'display_type')}")
+
             # DEBUG: Log del tool_response que se va a enviar
             logger.info(f"🔧 FINAL TOOL RESPONSE TO FRONTEND: {tool_response}")
-            logger.info(f"🔧 USER REGISTERED STATUS: {updated_context.get('user_registered', False)}")
-            logger.info(f"🔧 TOOL USED: {updated_context.get('tool_used', 'None')}")
-            
-            return ChatResponseDTO(
+            logger.info(f"🔧 USER REGISTERED STATUS: {safe_get_context(updated_context, 'user_registered')}")
+            logger.info(f"🔧 TOOL USED: {safe_get_context(updated_context, 'tool_used')}")
+
+            # Construir respuesta final
+            final_tool_data = safe_get_context(updated_context, 'tool_data') or tool_response or {}
+            final_display_type = safe_get_context(updated_context, 'display_type') or (tool_response.get('display_type') if tool_response else None)
+
+            # 🔧 FIX TEMPORAL: Si tool_used es service_consultation y hay catalog_config, FORZAR display_type
+            tool_used = safe_get_context(updated_context, 'tool_used')
+            if tool_used == 'service_consultation' and final_tool_data and final_tool_data.get('catalog_config'):
+                final_display_type = 'service_catalog'
+                logger.info("🔧 [FIX] FORCING display_type = 'service_catalog' due to service_consultation tool")
+
+            logger.info(f"🔧 [DEBUG_4] FINAL DATA TO FRONTEND:")
+            logger.info(f"🔧 [DEBUG_4]   tool_data: {final_tool_data}")
+            logger.info(f"🔧 [DEBUG_4]   display_type: {final_display_type}")
+            logger.info(f"🔧 [DEBUG_4]   tool_used: {safe_get_context(updated_context, 'tool_used')}")
+
+            response_dto = ChatResponseDTO(
                 message=ai_response,
                 conversation_id=conversation_id,
                 intent=intent_data.get('intent', 'OTRO'),
@@ -307,19 +361,21 @@ class ConversationUseCasesV2:
                 step=conversation.current_step,
                 timestamp=datetime.utcnow().isoformat(),
                 # New tool-based architecture fields
-                tool_used=updated_context.get('tool_used'),
-                tool_type=updated_context.get('tool_type'),
-                tool_data=tool_response if tool_response else {
-                    k: v for k, v in updated_context.items() 
-                    if k.startswith(('show_', 'request_', 'available_', 'services_'))
-                },
-                conversation_type=updated_context.get('conversation_type', 'natural'),
-                ai_enhanced=updated_context.get('ai_enhanced', False),
-                # Interactive form fields - NO enviar si usuario ya registrado
-                display_type=tool_response.get('display_type') if tool_response and not updated_context.get('user_registered') else None,
-                form_config=tool_response.get('form_config') if tool_response and not updated_context.get('user_registered') else None,
-                ai_continues_after=tool_response.get('ai_continues_after', False) if tool_response else False
+                tool_used=safe_get_context(updated_context, 'tool_used'),
+                tool_type=safe_get_context(updated_context, 'tool_type'),
+                tool_data=final_tool_data,
+                conversation_type=safe_get_context(updated_context, 'conversation_type') or 'natural',
+                ai_enhanced=safe_get_context(updated_context, 'ai_enhanced') or False,
+                # Interactive form fields - Priorizar updated_context sobre tool_response vacío
+                display_type=final_display_type,
+                form_config=safe_get_context(updated_context, 'form_config') or (tool_response.get('form_config') if tool_response else None),
+                ai_continues_after=safe_get_context(updated_context, 'ai_continues_after') or (tool_response.get('ai_continues_after') if tool_response else False)
             )
+
+            logger.info(f"🔧 [DEBUG_5] RESPONSE DTO CREATED - display_type: {response_dto.display_type}")
+            logger.info(f"🔧 [DEBUG_5] RESPONSE DTO CREATED - tool_data keys: {list(response_dto.tool_data.keys()) if response_dto.tool_data else 'None'}")
+
+            return response_dto
             
         except Exception as e:
             logger.error(f"Error processing message: {e}")

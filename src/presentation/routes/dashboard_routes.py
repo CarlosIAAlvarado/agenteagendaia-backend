@@ -3,7 +3,7 @@
 Dashboard Routes - Endpoints para métricas del dashboard
 """
 from fastapi import APIRouter, HTTPException, Depends
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 import logging
 # from ..middleware.error_handler import handle_errors
@@ -22,18 +22,18 @@ async def get_dashboard_metrics(
     """
     logger.info("📊 Obteniendo métricas del dashboard...")
     
-    # Fechas para cálculos - Usar timezone local en lugar de UTC
-    now = datetime.now()  # Local time en lugar de UTC
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    # Fechas para cálculos - Convertir a UTC para coincidir con DB
+    now_utc = datetime.now(timezone.utc)  # UTC time para coincidir con DB
+    today_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end_utc = now_utc.replace(hour=23, minute=59, second=59, microsecond=0)
     
     # Métricas en paralelo
     try:
-        # 1. Citas de hoy
+        # 1. Citas agendadas hoy (created_at = hoy)
         citas_hoy = await db.appointments.count_documents({
-            "appointment_date": {
-                "$gte": today_start,
-                "$lte": today_end
+            "created_at": {
+                "$gte": today_start_utc,
+                "$lte": today_end_utc
             }
         })
         
@@ -43,17 +43,17 @@ async def get_dashboard_metrics(
         # 3. Citas pendientes (futuras y programadas)
         citas_pendientes = await db.appointments.count_documents({
             "status": {"$in": ["scheduled", "confirmed"]},
-            "appointment_date": {"$gte": now}
+            "appointment_date": {"$gte": now_utc}
         })
         
         # 4. Citas pasadas para tasa de completación
         citas_pasadas = await db.appointments.count_documents({
-            "appointment_date": {"$lt": now}
+            "appointment_date": {"$lt": now_utc}
         })
-        
+
         citas_completadas = await db.appointments.count_documents({
             "status": "completed",
-            "appointment_date": {"$lt": now}
+            "appointment_date": {"$lt": now_utc}
         })
         
         # Calcular tasa de completación
@@ -62,13 +62,13 @@ async def get_dashboard_metrics(
             tasa_completada = (citas_completadas / citas_pasadas) * 100
         
         # 5. Cambios respecto al día anterior
-        yesterday_start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        yesterday_end = (now - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=0)
-        
+        yesterday_start_utc = (now_utc - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_end_utc = (now_utc - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=0)
+
         citas_ayer = await db.appointments.count_documents({
-            "appointment_date": {
-                "$gte": yesterday_start,
-                "$lte": yesterday_end
+            "created_at": {
+                "$gte": yesterday_start_utc,
+                "$lte": yesterday_end_utc
             }
         })
         
@@ -76,7 +76,7 @@ async def get_dashboard_metrics(
         cambio_citas_hoy = citas_hoy - citas_ayer
         
         # Usuarios nuevos en los últimos 7 días
-        semana_pasada = now - timedelta(days=7)
+        semana_pasada = now_utc - timedelta(days=7)
         usuarios_nuevos = await db.users.count_documents({
             "created_at": {"$gte": semana_pasada}
         })
@@ -86,7 +86,7 @@ async def get_dashboard_metrics(
         
         # 7. Próximas 5 citas
         proximas_citas_cursor = db.appointments.find({
-            "appointment_date": {"$gte": now},
+            "appointment_date": {"$gte": now_utc},
             "status": {"$in": ["scheduled", "confirmed"]}
         }).sort("appointment_date", 1).limit(5)
         

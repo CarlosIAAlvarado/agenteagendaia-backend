@@ -32,6 +32,13 @@ class Appointment:
     appointment_date: Optional[datetime] = None  # Date and time of appointment
     duration_minutes: Optional[int] = None       # Service duration
     price: Optional[float] = None                # Service price
+
+    # Resolved reference fields (populated by repository when joining)
+    user_name: Optional[str] = None              # User's full name
+    user_email: Optional[str] = None             # User's email
+    service_name: Optional[str] = None           # Service name
+    professional_name: Optional[str] = None      # Professional's full name
+    professional_email: Optional[str] = None     # Professional's email
     
     def __post_init__(self):
         if not self.user_id:

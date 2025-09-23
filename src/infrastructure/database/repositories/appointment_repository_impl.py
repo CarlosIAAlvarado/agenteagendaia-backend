@@ -64,18 +64,139 @@ class AppointmentRepositoryImpl(IAppointmentRepository):
             raise
     
     async def get_all(self, skip: int = 0, limit: int = 100) -> List[Appointment]:
-        """Get all appointments with pagination"""
+        """Get all appointments with pagination and related data"""
         try:
             collection = await self._get_collection()
-            
-            cursor = collection.find().skip(skip).limit(limit).sort("created_at", -1)
-            docs = await cursor.to_list(length=limit)
-            
-            return [AppointmentMapper.from_document(doc) for doc in docs]
-            
+
+            # Aggregation pipeline to join with related collections
+            pipeline = [
+                # Sort by created_at descending
+                {"$sort": {"created_at": -1}},
+
+                # Skip and limit for pagination
+                {"$skip": skip},
+                {"$limit": limit},
+
+                # Convert string IDs to ObjectIds and then lookup
+                {
+                    "$addFields": {
+                        "user_object_id": {
+                            "$cond": {
+                                "if": {"$eq": [{"$type": "$user_id"}, "string"]},
+                                "then": {"$toObjectId": "$user_id"},
+                                "else": "$user_id"
+                            }
+                        },
+                        "service_object_id": {
+                            "$cond": {
+                                "if": {"$eq": [{"$type": "$service_id"}, "string"]},
+                                "then": {"$toObjectId": "$service_id"},
+                                "else": "$service_id"
+                            }
+                        },
+                        "professional_object_id": {
+                            "$cond": {
+                                "if": {
+                                    "$and": [
+                                        {"$ne": ["$professional_id", None]},
+                                        {"$eq": [{"$type": "$professional_id"}, "string"]}
+                                    ]
+                                },
+                                "then": {"$toObjectId": "$professional_id"},
+                                "else": "$professional_id"
+                            }
+                        }
+                    }
+                },
+
+                # Lookup user information
+                {
+                    "$lookup": {
+                        "from": "users",
+                        "localField": "user_object_id",
+                        "foreignField": "_id",
+                        "as": "user_info"
+                    }
+                },
+
+                # Lookup service information
+                {
+                    "$lookup": {
+                        "from": "services",
+                        "localField": "service_object_id",
+                        "foreignField": "_id",
+                        "as": "service_info"
+                    }
+                },
+
+                # Lookup professional information
+                {
+                    "$lookup": {
+                        "from": "professionals",
+                        "localField": "professional_object_id",
+                        "foreignField": "_id",
+                        "as": "professional_info"
+                    }
+                },
+
+                # Add fields from the lookups
+                {
+                    "$addFields": {
+                        "user_name": {"$ifNull": [{"$arrayElemAt": ["$user_info.name", 0]}, "Usuario no encontrado"]},
+                        "user_email": {"$ifNull": [{"$arrayElemAt": ["$user_info.email", 0]}, ""]},
+                        "service_name": {"$ifNull": [{"$arrayElemAt": ["$service_info.name", 0]}, "Servicio no encontrado"]},
+                        "service_duration": {"$ifNull": [{"$arrayElemAt": ["$service_info.duration", 0]}, 30]},
+                        "service_price": {"$ifNull": [{"$arrayElemAt": ["$service_info.price", 0]}, 0]},
+                        "professional_name": {"$ifNull": [{"$arrayElemAt": ["$professional_info.name", 0]}, "Por asignar"]},
+                        "professional_email": {"$ifNull": [{"$arrayElemAt": ["$professional_info.email", 0]}, ""]}
+                    }
+                },
+
+                # Remove the lookup arrays and auxiliary fields
+                {
+                    "$project": {
+                        "user_info": 0,
+                        "service_info": 0,
+                        "professional_info": 0,
+                        "user_object_id": 0,
+                        "service_object_id": 0,
+                        "professional_object_id": 0
+                    }
+                }
+            ]
+
+            cursor = collection.aggregate(pipeline)
+            docs = await cursor.to_list(length=None)
+
+            logger.info(f"Aggregation returned {len(docs)} documents")
+            if docs:
+                logger.info(f"First document keys: {list(docs[0].keys())}")
+                logger.info(f"First document user_name: {docs[0].get('user_name', 'NOT_FOUND')}")
+
+            # Process documents with additional fields
+            appointments = []
+            for doc in docs:
+                appointment = AppointmentMapper.from_document(doc)
+                # Add the resolved fields
+                appointment.user_name = doc.get('user_name', 'Usuario no encontrado')
+                appointment.user_email = doc.get('user_email', '')
+                appointment.service_name = doc.get('service_name', 'Servicio no encontrado')
+                appointment.professional_name = doc.get('professional_name', 'Por asignar')
+                appointments.append(appointment)
+
+            logger.info(f"Successfully processed {len(appointments)} appointments with joins")
+            return appointments
+
         except Exception as e:
-            logger.error(f"Error getting all appointments: {e}")
-            raise
+            logger.error(f"Error getting all appointments with joins: {e}")
+            logger.error(f"Aggregation pipeline failed, falling back to simple query")
+            # Fallback to simple query without joins
+            try:
+                cursor = collection.find().skip(skip).limit(limit).sort("created_at", -1)
+                docs = await cursor.to_list(length=limit)
+                return [AppointmentMapper.from_document(doc) for doc in docs]
+            except:
+                raise
     
     async def get_by_user_id(self, user_id: str, skip: int = 0, limit: int = 100) -> List[Appointment]:
         """Get appointments by user ID"""
@@ -479,4 +600,28 @@ class AppointmentRepositoryImpl(IAppointmentRepository):
             return [self._document_to_appointment(doc) for doc in documents]
         except Exception as e:
             logger.error(f"Error getting appointments by date range paginated {start_date} - {end_date}: {e}")
+            raise
+
+    async def get_by_professional_and_date_range(self, professional_id: str, start_date: date, end_date: date) -> List[Appointment]:
+        """Get appointments for a professional within a date range"""
+        try:
+            collection = await self._get_collection()
+
+            # Convert dates to datetime range
+            start_datetime = datetime.combine(start_date, datetime.min.time())
+            end_datetime = datetime.combine(end_date, datetime.max.time())
+
+            cursor = collection.find({
+                "professional_id": professional_id,
+                "appointment_date": {
+                    "$gte": start_datetime,
+                    "$lte": end_datetime
+                }
+            }).sort("appointment_date", 1)
+
+            documents = await cursor.to_list(length=None)
+            return [self._document_to_appointment(doc) for doc in documents]
+
+        except Exception as e:
+            logger.error(f"Error getting appointments by professional {professional_id} and date range {start_date} - {end_date}: {e}")
             raise

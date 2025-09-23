@@ -9,6 +9,7 @@ from src.infrastructure.config.settings import get_settings
 import logging
 from functools import lru_cache
 import asyncio
+from bson import ObjectId
 
 # Get settings
 settings = get_settings()
@@ -18,6 +19,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+# Create logger instance
+logger = logging.getLogger(__name__)
 
 print("[MAIN.PY] CALENDAR ENDPOINT ADDED + LOGGER FIXED")
 logging.info("[MAIN.PY] CALENDAR ENDPOINT ADDED + LOGGER FIXED")
@@ -171,9 +175,7 @@ async def get_calendar_appointments_real(
 ):
     """Calendar view endpoint - OPTIMIZED FOR REAL MONGODB DATA"""
     from datetime import datetime, date as date_class, timedelta
-    from src.infrastructure.dependencies import get_database
-    from motor.motor_asyncio import AsyncIOMotorDatabase
-    import asyncio
+    from src.infrastructure.database.connection import get_database
     
     logging.info(f"📅 [REAL DATA] Getting calendar appointments for {year}-{month:02d}")
     
@@ -186,8 +188,8 @@ async def get_calendar_appointments_real(
     last_day = next_month - timedelta(days=1)
     
     try:
-        # Get database connection with shorter timeout for faster response
-        db: AsyncIOMotorDatabase = await asyncio.wait_for(get_database(), timeout=3.0)
+        # Get database connection
+        db = await get_database()
         
         # Query appointments for the specified month with optimizations
         # Use datetime range for MongoDB comparison (Approach 3 - most reliable)
@@ -518,15 +520,14 @@ async def root():
 async def get_appointments_real(limit: int = 100, upcoming_only: bool = Query(False, description="Show only upcoming appointments")):
     """REAL appointments endpoint using MongoDB Atlas - SAME PATTERN AS DASHBOARD"""
     from datetime import datetime
-    from src.infrastructure.dependencies import get_database
-    from motor.motor_asyncio import AsyncIOMotorDatabase
+    from src.infrastructure.database.connection import get_database
     import traceback
     
     try:
         logging.info(f"📋 Getting REAL appointments from MongoDB with limit: {limit}, upcoming_only: {upcoming_only}")
         
         # Get database connection - SAME PATTERN AS DASHBOARD
-        db: AsyncIOMotorDatabase = await get_database()
+        db = await get_database()
         
         # Build query based on upcoming_only filter
         query = {}
@@ -538,12 +539,39 @@ async def get_appointments_real(limit: int = 100, upcoming_only: bool = Query(Fa
         appointments_cursor = db.appointments.find(query).sort("appointment_date", 1).limit(limit)
         raw_appointments = await appointments_cursor.to_list(length=limit)
         
-        # Transform appointments with user lookup - SAME PATTERN AS DASHBOARD
+        # Transform appointments with user, service, and professional lookups
         appointments_list = []
         for raw_apt in raw_appointments:
-            # Get user info - SAME PATTERN AS DASHBOARD
-            user = await db.users.find_one({"_id": raw_apt.get("user_id")}) if raw_apt.get("user_id") else None
+            # Get user info (convert string ID to ObjectId)
+            user = None
+            if raw_apt.get("user_id"):
+                try:
+                    user_id = ObjectId(raw_apt["user_id"]) if isinstance(raw_apt["user_id"], str) else raw_apt["user_id"]
+                    user = await db.users.find_one({"_id": user_id})
+                except Exception as e:
+                    logger.warning(f"Error finding user {raw_apt.get('user_id')}: {e}")
             user_name = user["name"] if user else "Usuario desconocido"
+            user_email = user["email"]["value"] if user and user.get("email") and isinstance(user["email"], dict) else (user["email"] if user and user.get("email") else "")
+
+            # Get service info (convert string ID to ObjectId)
+            service = None
+            if raw_apt.get("service_id"):
+                try:
+                    service_id = ObjectId(raw_apt["service_id"]) if isinstance(raw_apt["service_id"], str) else raw_apt["service_id"]
+                    service = await db.services.find_one({"_id": service_id})
+                except Exception as e:
+                    logger.warning(f"Error finding service {raw_apt.get('service_id')}: {e}")
+            service_name = service["name"] if service else "Servicio no encontrado"
+
+            # Get professional info (convert string ID to ObjectId)
+            professional = None
+            if raw_apt.get("professional_id"):
+                try:
+                    professional_id = ObjectId(raw_apt["professional_id"]) if isinstance(raw_apt["professional_id"], str) else raw_apt["professional_id"]
+                    professional = await db.professionals.find_one({"_id": professional_id})
+                except Exception as e:
+                    logger.warning(f"Error finding professional {raw_apt.get('professional_id')}: {e}")
+            professional_name = professional["name"] if professional else "Por asignar"
             
             # Transform appointment for API response
             appointment_datetime = raw_apt.get('appointment_date')
@@ -558,11 +586,12 @@ async def get_appointments_real(limit: int = 100, upcoming_only: bool = Query(Fa
                 "id": str(raw_apt.get('_id')),
                 "user_id": str(raw_apt.get('user_id')) if raw_apt.get('user_id') else None,
                 "user_name": user_name,
-                "service_id": raw_apt.get('service_id'),
-                "professional_id": raw_apt.get('professional_id'),
+                "user_email": user_email,
+                "service_id": str(raw_apt.get('service_id')) if raw_apt.get('service_id') else None,
+                "professional_id": str(raw_apt.get('professional_id')) if raw_apt.get('professional_id') else None,
                 "status": raw_apt.get('status', 'draft'),
-                "service_name": raw_apt.get('service_name', 'Servicio no especificado'),
-                "professional_name": raw_apt.get('professional_name', 'Por asignar'),
+                "service_name": service_name,
+                "professional_name": professional_name,
                 "duration_minutes": raw_apt.get('duration_minutes', 30),
                 "price": raw_apt.get('price', 0.0),
                 "notes": raw_apt.get('notes', ''),
@@ -604,7 +633,7 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     reload = os.getenv("RELOAD", "false").lower() == "true"
 
-    print(f"🚀 Starting Agenda IA API on {host}:{port}")
-    print(f"🔄 Reload mode: {reload}")
+    print(f"Starting Agenda IA API on {host}:{port}")
+    print(f"Reload mode: {reload}")
 
     uvicorn.run("main:app", host=host, port=port, reload=reload)

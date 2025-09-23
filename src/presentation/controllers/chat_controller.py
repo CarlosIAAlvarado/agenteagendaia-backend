@@ -352,7 +352,7 @@ class ChatController:
             user_repo = await get_user_repository()
             
             # Create the user entity
-            new_user = User(
+            new_user = Patient(
                 id=None,
                 name=registration_data.name,
                 email=Email(registration_data.email),

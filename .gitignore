@@ -1,26 +1,12 @@
-# ========================================
-# AGENDA IA - Backend .gitignore
-# ========================================
-
-# === ARCHIVOS DE ENTORNO ===
-.env
-.env.local
-.env.production
-.env.staging
-.env.development
-
-# === CREDENCIALES Y CONFIGURACIÓN SENSIBLE ===
-google_credentials.json
-*.pem
-*.key
-*.crt
-secrets.json
-
-# === PYTHON ===
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# C extensions
 *.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -34,13 +20,66 @@ parts/
 sdist/
 var/
 wheels/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
-# === ENTORNOS VIRTUALES ===
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
 .env
 .venv
 env/
@@ -49,65 +88,28 @@ ENV/
 env.bak/
 venv.bak/
 
-# === JUPYTER NOTEBOOK ===
-.ipynb_checkpoints
+# Spyder project settings
+.spyderproject
+.spyproject
 
-# === PYENV ===
-.python-version
+# Rope project settings
+.ropeproject
 
-# === PIPENV ===
-Pipfile.lock
+# mkdocs documentation
+/site
 
-# === POETRY ===
-poetry.lock
-
-# === CELERY ===
-celerybeat-schedule
-celerybeat.pid
-
-# === COVERAGE ===
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
-
-# === MYPY ===
+# mypy
 .mypy_cache/
 .dmypy.json
 dmypy.json
 
-# === PYRE ===
-.pyre/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# === PYTYPE ===
-.pytype/
-
-# === BASE DE DATOS VECTORIAL ===
-chroma_db/
-vector_store/
-embeddings/
-
-# === LOGS ===
-logs/
-*.log
-log.txt
-
-# === ARCHIVOS TEMPORALES ===
-temp/
-tmp/
-*.tmp
-*.temp
-
-# === ARCHIVOS DE SISTEMA ===
+# OS generated files
 .DS_Store
 .DS_Store?
 ._*
@@ -116,32 +118,25 @@ tmp/
 ehthumbs.db
 Thumbs.db
 
-# === EDITORES E IDEs ===
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Project specific
+chroma_db/
+*.sqlite3
+logs/
+temp/
+tmp/
 
-# === ARCHIVOS DE RESPALDO ===
+# Test files
+test_*.py
+*_test.py
+
+# Backup files
 *.bak
 *.backup
-*.old
 
-# === ARCHIVOS DE DATOS DE PRUEBA ===
-test_data/
-sample_data/
+# Temporary files
+*.tmp
+*.temp
+# NEVER commit these files
+.env
+*.env
 
-# === DOCUMENTOS DE DESARROLLO ===
-dev_notes.md
-TODO.md
-NOTES.txt
-
-# === ARCHIVOS ESPECÍFICOS DEL PROYECTO ===
-test_service_creation.py
-test_service_unique.py
-populate_realistic_data.py
-analyze_database.py
-clean_*.py
-remove_*.py
-init_super_admin.py

@@ -1,31 +1,64 @@
 services:
   - type: web
-    name: agenteagendaia-backend
+    name: agenda-ia-backend
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    region: oregon
     plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    healthCheckPath: /
     envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: DEBUG
-        value: false
       - key: HOST
-        value: 0.0.0.0
+        value: "0.0.0.0"
       - key: PORT
-        fromService:
-          type: web
-          name: agenteagendaia-backend
-          property: port
+        value: "10000"
+      - key: PYTHONPATH
+        value: "/opt/render/project/src"
       - key: MONGODB_URI
-        sync: false  # Configura esto en el dashboard de Render
+        sync: false
       - key: DATABASE_NAME
-        value: Agenda_Ai
-      - key: SECRET_KEY
-        generateValue: true  # Render generará una clave secreta
+        value: "Agenda_Ai"
       - key: OPENAI_API_KEY
-        sync: false  # Configura esto en el dashboard de Render
+        sync: false
+      - key: OPENAI_MODEL
+        value: "gpt-4o-mini"
+      - key: SECRET_KEY
+        sync: false
+      - key: ALGORITHM
+        value: "HS256"
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "7"
       - key: ALLOWED_ORIGINS
-        value: "*"  # Configura tus dominios específicos en producción
-      - key: LINK_BASE_URL
-        value: https://agenteagendaia-backend.onrender.com
+        value: "https://agenda-ia-frontend.vercel.app,https://*.vercel.app"
+      - key: DEBUG
+        value: "False"
+      - key: APP_NAME
+        value: "Agenda IA"
+      - key: APP_VERSION
+        value: "2.0.0"
+      - key: SMTP_SERVER
+        value: "smtp.gmail.com"
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_FROM_NAME
+        value: "Agenda IA"
+      - key: EMAIL_FROM_ADDRESS
+        sync: false
+      - key: EMAIL_ENABLED
+        value: "True"
+      - key: COMPANY_NAME
+        value: "Agenda IA"
+      - key: COMPANY_EMAIL
+        sync: false
+      - key: COMPANY_WEBSITE
+        value: "https://agenda-ia-frontend.vercel.app"
+      - key: LOG_LEVEL
+        value: "INFO"
+      - key: MAX_REQUESTS_PER_MINUTE
+        value: "100"

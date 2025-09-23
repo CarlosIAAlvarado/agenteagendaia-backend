@@ -82,6 +82,11 @@ class AgendaIAAgent:
             from ...domain.services.ai_tools.user_verification_tool import UserVerificationTool
             self.verification_tool = UserVerificationTool(user_repo)
             logger.info("[SUCCESS] User verification tool initialized")
+
+            # Inicializar nueva herramienta de verificación de sesión en tiempo real
+            from ...domain.services.ai_tools.user_session_verification_tool import UserSessionVerificationTool
+            self.session_verification_tool = UserSessionVerificationTool(user_repo)
+            logger.info("[SUCCESS] User session verification tool (real-time DB access) initialized")
             
             # Inicializar herramienta de servicios si tenemos los repositorios
             if service_repo and professional_repo:
@@ -102,14 +107,101 @@ class AgendaIAAgent:
             else:
                 self.appointment_tool = None
                 logger.info("[WARNING] Appointment tool not initialized - missing repositories")
-            
+
+            # Inicializar nueva herramienta de agendamiento completo
+            if service_repo and professional_repo and appointment_repo:
+                from ...domain.services.ai_tools.appointment_booking_tool import AppointmentBookingTool
+                self.booking_tool = AppointmentBookingTool(
+                    user_repo, service_repo, professional_repo, appointment_repo
+                )
+                logger.info("[SUCCESS] Appointment booking tool (complete flow) initialized")
+            else:
+                self.booking_tool = None
+                logger.info("[WARNING] Booking tool not initialized - missing repositories")
+
+            # 📧 Inicializar herramienta de notificación por email
+            if user_repo and appointment_repo:
+                try:
+                    from ...domain.services.ai_tools.email_notification_tool import EmailNotificationTool
+                    from ...infrastructure.database.repositories.email_config_repository_impl import EmailConfigRepositoryImpl
+                    from ...infrastructure.database.repositories.company_config_repository_impl import CompanyConfigRepositoryImpl
+
+                    # Obtener configuraciones de email y empresa
+                    email_config_repo = EmailConfigRepositoryImpl()
+                    company_config_repo = CompanyConfigRepositoryImpl()
+
+                    # Nota: La configuración se cargará dinámicamente en cada uso
+                    self.email_tool = EmailNotificationTool(
+                        user_repository=user_repo,
+                        appointment_repository=appointment_repo,
+                        email_config=None,  # Se cargará dinámicamente
+                        company_config=None  # Se cargará dinámicamente
+                    )
+                    self.email_config_repo = email_config_repo
+                    self.company_config_repo = company_config_repo
+                    logger.info("[SUCCESS] Email notification tool initialized")
+                except Exception as e:
+                    self.email_tool = None
+                    self.email_config_repo = None
+                    self.company_config_repo = None
+                    logger.warning(f"[WARNING] Email tool initialization failed: {e}")
+            else:
+                self.email_tool = None
+                self.email_config_repo = None
+                self.company_config_repo = None
+                logger.info("[WARNING] Email tool not initialized - missing repositories")
+
+            # 🔄 Inicializar herramienta de reagendamiento
+            if appointment_repo and professional_repo and service_repo:
+                try:
+                    from ...domain.services.ai_tools.appointment_reschedule_tool import AppointmentRescheduleTool
+
+                    self.reschedule_tool = AppointmentRescheduleTool(
+                        appointment_repository=appointment_repo,
+                        professional_repository=professional_repo,
+                        service_repository=service_repo,
+                        email_tool=self.email_tool  # Pasar email_tool para notificaciones
+                    )
+                    logger.info("[SUCCESS] Appointment reschedule tool initialized")
+                except Exception as e:
+                    self.reschedule_tool = None
+                    logger.warning(f"[WARNING] Reschedule tool initialization failed: {e}")
+            else:
+                self.reschedule_tool = None
+                logger.info("[WARNING] Reschedule tool not initialized - missing repositories")
+
+            # 🚫 Inicializar herramienta de cancelación de citas
+            if appointment_repo and professional_repo and service_repo and user_repo:
+                try:
+                    from ...domain.services.ai_tools.appointment_cancellation_tool import AppointmentCancellationTool
+
+                    self.cancellation_tool = AppointmentCancellationTool(
+                        appointment_repository=appointment_repo,
+                        professional_repository=professional_repo,
+                        service_repository=service_repo,
+                        user_repository=user_repo
+                    )
+                    logger.info("[SUCCESS] Appointment cancellation tool initialized")
+                except Exception as e:
+                    self.cancellation_tool = None
+                    logger.warning(f"[WARNING] Cancellation tool initialization failed: {e}")
+            else:
+                self.cancellation_tool = None
+                logger.info("[WARNING] Cancellation tool not initialized - missing repositories")
+
             self.tools_available = True
-            logger.info("[SUCCESS] AI Tools initialized - Registration, Service and Appointment tools available")
+            logger.info("[SUCCESS] AI Tools initialized - Registration, Service, Appointment, Email, Reschedule and Cancellation tools available")
         else:
             self.registration_tool = None
             self.verification_tool = None
+            self.session_verification_tool = None
             self.service_tool = None
             self.appointment_tool = None
+            self.booking_tool = None
+            self.email_tool = None
+            self.email_config_repo = None
+            self.company_config_repo = None
+            self.reschedule_tool = None
             logger.info("[WARNING] AI Tools not initialized - repositories not provided")
         
         self.instructions = """
@@ -133,10 +225,11 @@ REGLAS DE CONVERSACIÓN:
    - Si existe → Saluda por nombre y ofrece servicios
    - Si no existe → Pre-llena formulario con datos detectados
 
-2️⃣ PALABRAS CLAVE DE AGENDAMIENTO:
-   - "cita", "agendar", "reservar", "turno", "consulta"
-   - "necesito ver a un doctor", "quiero programar"
-   - Al detectarlas → Activa flujo de agendamiento
+2️⃣ DETECCIÓN AUTOMÁTICA DE AGENDAMIENTO (USAR HERRAMIENTAS):
+   - SIEMPRE que detectes: "agendar", "cita", "consulta", "reservar", "turno" → USAR start_booking_process
+   - SIEMPRE que detectes un email → USAR verify_user_by_email
+   - SIEMPRE que detectes un teléfono → USAR verify_user_by_phone
+   - OBLIGATORIO: Usar herramientas, no solo responder con texto
 
 3️⃣ PROCESO SIMPLIFICADO:
    Usuario menciona agendar → Verificar/Registrar → Mostrar servicios → Seleccionar horario → Confirmar
@@ -144,17 +237,66 @@ REGLAS DE CONVERSACIÓN:
 📋 HERRAMIENTAS Y SU USO:
 
 ✅ USA AUTOMÁTICAMENTE:
+
+🎯 HERRAMIENTA PRINCIPAL DE AGENDAMIENTO:
+- start_booking_process:
+  * USA AUTOMÁTICAMENTE cuando el usuario diga "quiero agendar", "necesito una cita", "agendar consulta", etc.
+  * Maneja TODO el flujo: verificación automática → servicios → calendario → confirmación
+  * Es la herramienta PRIORITARIA para agendamiento
+  * Solo esta herramienta puede mostrar servicios Y calendarios interactivos
+
+🔧 HERRAMIENTAS DE VERIFICACIÓN:
 - verify_user_by_email: Cuando detectes un email
 - verify_user_by_phone: Cuando detectes un teléfono
-- get_available_services: Cuando usuario pregunte por servicios o quiera agendar
-- show_registration_form: Cuando usuario no esté registrado y quiera agendar
-- create_draft_appointment: Cuando usuario selecciona un servicio específico para agendar
-- confirm_appointment: Cuando usuario selecciona fecha y hora específicas del calendario
+
+🏥 HERRAMIENTAS INFORMATIVAS (solo información):
+- get_available_services: Solo para mostrar información de servicios (no para agendar)
+- show_registration_form: Solo cuando usuario no esté registrado
+
+📧 HERRAMIENTA DE NOTIFICACIÓN:
+- send_appointment_confirmation_email: Se ejecuta AUTOMÁTICAMENTE cuando se confirma una cita exitosamente
+  * Envía email profesional con todos los detalles de la cita
+  * Incluye información del servicio, fecha, hora, profesional, precio
+  * Se ejecuta en segundo plano sin intervención del usuario
+  * Si hay error en email, la cita se confirma igual
+  * Informa al usuario cuando se envía: "📧 Te envié los detalles por email a: email@example.com"
+
+🔄 HERRAMIENTA DE REAGENDAMIENTO:
+- start_reschedule_process: USAR AUTOMÁTICAMENTE cuando el usuario mencione reagendar Y proporcione el ID de la cita
+  * Detecta menciones como "reagendar", "cambiar cita", "mover cita", "reprogramar"
+  * OBLIGATORIO: Requiere el ID de la cita (provisto en emails de confirmación)
+  * Si el usuario dice "reagendar" pero no proporciona ID → pregúntale por el ID
+  * Si el usuario proporciona "reagendar" + ID → USAR start_reschedule_process INMEDIATAMENTE
+  * Muestra información actual de la cita y valida permisos
+  * Inicia el proceso interactivo de reagendamiento con calendario
+- show_reschedule_calendar: Se ejecuta automáticamente después de start_reschedule_process
+- confirm_reschedule: Se usa cuando el usuario selecciona nueva fecha/hora del calendario
+
+🚫 HERRAMIENTA DE CANCELACIÓN:
+- start_cancellation_process: USAR AUTOMÁTICAMENTE cuando el usuario mencione cancelar Y proporcione el ID de la cita
+  * Detecta menciones como "cancelar", "anular", "eliminar cita", "no quiero la cita"
+  * OBLIGATORIO: Requiere el ID de la cita (provisto en emails de confirmación)
+  * Si el usuario dice "cancelar" pero no proporciona ID → pregúntale por el ID
+  * Si el usuario proporciona "cancelar" + ID → USAR start_cancellation_process INMEDIATAMENTE
+  * Muestra información actual de la cita para confirmación
+  * Solicita confirmación antes de proceder
+- confirm_cancellation: Se usa cuando el usuario confirma que desea cancelar la cita
+  * Ejecuta la cancelación definitiva
+  * Actualiza status en base de datos
+  * Envía email de confirmación de cancelación
+
+⚠️ HERRAMIENTAS LEGACY (NO USAR para nuevas citas):
+- create_draft_appointment: Solo para compatibilidad, prefer start_booking_process
+- confirm_appointment: Solo para compatibilidad, prefer start_booking_process
 
 ⚠️ NO PREGUNTES, ACTÚA:
 - NO: "¿Estás registrado?" → SÍ: Verifica automáticamente
 - NO: "¿Quieres ver los servicios?" → SÍ: Muestra servicios directamente
 - NO: "¿Te gustaría agendar?" → SÍ: Inicia el proceso cuando detectes intención
+- DESPUÉS DE REGISTRO: OBLIGATORIO USAR get_available_services (NUNCA solo texto)
+- SI DETECTAS ID DE CITA (formato: 68d1c0447176386b2af8015f):
+  * Con "reagendar" → USAR start_reschedule_process INMEDIATAMENTE
+  * Con "cancelar" → USAR start_cancellation_process INMEDIATAMENTE
 
 💬 EJEMPLOS DE RESPUESTAS:
 
@@ -169,12 +311,43 @@ Tú: "Perfecto, te ayudo con tu cita. [VERIFICAR AUTOMÁTICAMENTE SI DETECTAS DA
 [CON EMAIL DETECTADO]
 Usuario: "Quiero agendar, mi email es juan@email.com"
 Tú: [VERIFICAR CON verify_user_by_email INMEDIATAMENTE]
-Si existe: "¡Hola Juan! Te reconocí. Estos son nuestros servicios disponibles..."
+Si existe: "¡Hola Juan! Te reconocí." [USAR get_available_services INMEDIATAMENTE]
 Si no existe: "Veo que es tu primera vez. Te voy a registrar rápidamente..."
+
+[DESPUÉS DE REGISTRO EXITOSO - OBLIGATORIO USAR HERRAMIENTAS]
+Usuario: "REGISTRO: Juan, juan@email.com, 123456789, email"
+Tú: OBLIGATORIO USAR get_available_services (NUNCA solo texto)
+RESPUESTA CORRECTA: SOLO llamar get_available_services
+RESPUESTA INCORRECTA: "¡Excelente Juan! Tu registro fue exitoso. ¿Qué servicio médico te interesa?"
 
 [CONVERSACIÓN CASUAL]
 Usuario: "¿Cómo estás?"
 Tú: "Muy bien, gracias por preguntar. Estoy aquí para ayudarte con cualquier cosa que necesites. ¿Hay algo en particular en lo que pueda asistirte?"
+
+[REAGENDAMIENTO SIN ID]
+Usuario: "Quiero reagendar mi cita"
+Tú: "Claro, para poder ayudarte a reagendar tu cita, necesitaré el ID de la cita que deseas cambiar. Puedes encontrarlo en el correo de confirmación que recibiste. ¿Cuál es el ID de tu cita?"
+
+[REAGENDAMIENTO CON ID]
+Usuario: "Quiero reagendar mi cita 68d1c0447176386b2af8015f"
+Tú: [USAR start_reschedule_process INMEDIATAMENTE con appointment_id="68d1c0447176386b2af8015f"]
+
+[CANCELACIÓN SIN ID]
+Usuario: "Quiero cancelar mi cita"
+Tú: "Claro, para poder ayudarte a cancelar tu cita, necesitaré el ID de la cita que deseas cancelar. Puedes encontrarlo en el correo de confirmación que recibiste. ¿Cuál es el ID de tu cita?"
+
+[CANCELACIÓN CON ID]
+Usuario: "Quiero cancelar mi cita 68d1c0447176386b2af8015f"
+Tú: [USAR start_cancellation_process INMEDIATAMENTE con appointment_id="68d1c0447176386b2af8015f"]
+
+[CONFIRMACIÓN DE CANCELACIÓN]
+Usuario: "Sí, confirmo la cancelación de la cita 68d1c0447176386b2af8015f"
+Usuario: "Confirmar cancelación"
+Usuario: "Sí, cancela la cita"
+Usuario: "Proceder con la cancelación"
+Tú: [USAR confirm_cancellation INMEDIATAMENTE con appointment_id="68d1c0447176386b2af8015f" del contexto de cancelación]
+
+IMPORTANTE: Para confirm_cancellation SIEMPRE incluir el appointment_id específico que está en el contexto de cancelación.
 
 ✨ CALENDARIO Y HORARIOS:
 
@@ -198,22 +371,47 @@ Cuando el usuario seleccione un servicio:
         """Detecta la intención principal del mensaje del usuario"""
         mensaje_lower = mensaje.lower()
         
-        # Patrones de intención
-        intenciones = {
-            "AGENDAR": ["agendar", "cita", "reservar", "turno", "appointment", "necesito una cita"],
-            "REAGENDAR": ["reagendar", "cambiar cita", "mover cita", "reprogramar"],
-            "CANCELAR": ["cancelar", "anular", "eliminar cita"],
-            "INFO_SERVICIOS": ["servicios", "qué servicios", "que ofrecen", "tipos de cita", "muestrame", "muestra", "ver servicios", "listar servicios", "catálogo", "opciones", "que tienen"],
-            "SALUDO": ["hola", "buenos días", "buenas tardes", "buenas noches", "hey", "como estas", "como vas", "que tal"],
-            "CONVERSACION_CASUAL": [
+        # Patrones de intención - ORDEN DE PRIORIDAD (los más específicos primero)
+        from collections import OrderedDict
+        intenciones = OrderedDict([
+            # 🎯 AGENDAMIENTO - MÁS ALTA PRIORIDAD
+            ("AGENDAR", [
+                "quiero agendar", "necesito agendar", "quiero una cita", "necesito una cita",
+                "quiero reservar", "necesito reservar", "quiero turno", "necesito turno",
+                "agendar", "cita", "reservar", "turno", "appointment", "agendar cita",
+                "hacer cita", "pedir cita", "solicitar cita", "programar cita"
+            ]),
+
+            # 📅 REAGENDAMIENTO
+            ("REAGENDAR", ["reagendar", "cambiar cita", "mover cita", "reprogramar", "cambiar turno"]),
+
+            # ❌ CANCELACIÓN
+            ("CANCELAR", ["cancelar", "anular", "eliminar cita", "cancelar cita"]),
+
+            # 📋 INFORMACIÓN SERVICIOS
+            ("INFO_SERVICIOS", [
+                "servicios", "qué servicios", "que ofrecen", "tipos de cita", "muestrame",
+                "muestra", "mostrar", "ver servicios", "listar servicios", "catálogo",
+                "opciones", "que tienen", "disponibles", "clases", "tipos"
+            ]),
+
+            # ✅ CONFIRMACIÓN
+            ("CONFIRMACION", ["sí", "si", "ok", "está bien", "confirmo", "de acuerdo", "perfecto"]),
+
+            # ❌ NEGACIÓN
+            ("NEGACION", ["no", "cancelar", "mejor no", "no quiero"]),
+
+            # 👋 SALUDO
+            ("SALUDO", ["hola", "buenos días", "buenas tardes", "buenas noches", "hey"]),
+
+            # 💬 CONVERSACIÓN CASUAL - MENOR PRIORIDAD
+            ("CONVERSACION_CASUAL", [
+                "como estas", "como vas", "que tal", "que haces", "como te va",
                 "que te gusta", "que prefieres", "te gusta", "gustos", "preferencias",
                 "interesante", "genial", "cool", "que bien", "amazing", "increible",
-                "como estas", "como vas", "que haces", "como te va", "que tal",
-                "gracias", "muy bien", "perfecto", "excelente"
-            ],
-            "CONFIRMACION": ["sí", "si", "ok", "está bien", "confirmo", "de acuerdo"],
-            "NEGACION": ["no", "cancelar", "mejor no", "no quiero"]
-        }
+                "gracias", "muy bien", "excelente"
+            ])
+        ])
         
         # Buscar coincidencias
         for intencion, patrones in intenciones.items():
@@ -409,29 +607,108 @@ Cuando el usuario seleccione un servicio:
             logger.error(f"Error using service tool: {e}")
             return {"success": False, "error": str(e)}
 
+    async def use_booking_tool(self, action: str, context: AgentContext, **kwargs) -> Dict[str, Any]:
+        """
+        Usa la herramienta de agendamiento completo
+        """
+        try:
+            if not self.booking_tool:
+                logger.error("Booking tool not initialized")
+                return {"success": False, "error": "Booking tool not available"}
+
+            # Convertir contexto a diccionario para la herramienta
+            conversation_context = context.context_data.copy()
+
+            logger.info(f"[BOOKING_TOOL] Action: {action}, Context: {conversation_context}")
+
+            if action == "start_booking":
+                result = await self.booking_tool.start_booking_process(conversation_context)
+
+                # Actualizar contexto con los datos de la herramienta
+                if result.get("context_updates"):
+                    for key, value in result["context_updates"].items():
+                        context.update_context(key, value)
+
+                return result
+
+            elif action == "select_service":
+                service_id = kwargs.get("service_id")
+                if not service_id:
+                    return {"success": False, "error": "service_id required"}
+
+                result = await self.booking_tool.select_service(service_id, conversation_context)
+
+                # Actualizar contexto
+                if result.get("context_updates"):
+                    for key, value in result["context_updates"].items():
+                        context.update_context(key, value)
+
+                return result
+
+            elif action == "book_appointment":
+                slot_datetime = kwargs.get("slot_datetime")
+                if not slot_datetime:
+                    return {"success": False, "error": "slot_datetime required"}
+
+                result = await self.booking_tool.book_appointment(slot_datetime, conversation_context)
+
+                # Actualizar contexto
+                if result.get("context_updates"):
+                    for key, value in result["context_updates"].items():
+                        context.update_context(key, value)
+
+                return result
+
+            else:
+                logger.error(f"Unknown booking action: {action}")
+                return {"success": False, "error": f"Unknown action: {action}"}
+
+        except Exception as e:
+            logger.error(f"Error using booking tool: {e}")
+            return {"success": False, "error": str(e)}
+
     async def process_message(self, message: str, context: AgentContext) -> Tuple[str, AgentContext]:
         """
         Procesa un mensaje del usuario usando el agente IA
         """
         try:
-            # DEBUG: Log del mensaje exacto que llega
+            # DEBUG: Log del mensaje exacto que llega + estado del usuario
             logger.info(f"[CRITICAL][CRITICAL] AGENT PROCESS_MESSAGE CALLED: '{message}'")
             logger.info(f"[CRITICAL][CRITICAL] Message type: {type(message)}, length: {len(message)}")
+
+            # DEBUG: Estado del usuario ANTES de cualquier procesamiento
+            user_registered = context.get_context("user_registered", False)
+            registration_completed = context.get_context("registration_completed", False)
+            skip_registration = context.get_context("skip_registration_detection", False)
+            user_verified = context.get_context("user_verified", False)
+            user_data = context.get_context("user_data", {})
+
+            logger.info(f"[CRITICAL][STATE] user_registered: {user_registered}")
+            logger.info(f"[CRITICAL][STATE] registration_completed: {registration_completed}")
+            logger.info(f"[CRITICAL][STATE] skip_registration_detection: {skip_registration}")
+            logger.info(f"[CRITICAL][STATE] user_verified: {user_verified}")
+            logger.info(f"[CRITICAL][STATE] user_data: {user_data}")
+
             logger.info(f"[CRITICAL][CRITICAL] Starts with REGISTRO: {message.startswith('REGISTRO:')}")
+            logger.info(f"[CRITICAL][CRITICAL] Starts with REGISTRO with space: {message.startswith('REGISTRO: ')}")
             logger.info(f"[CRITICAL][CRITICAL] Starts with SERVICIO_SELECCIONADO: {message.startswith('SERVICIO_SELECCIONADO:')}")
-            
+
             # AQUÍ DEBE APARECER ESTE LOG SIEMPRE
             logger.info("[CRITICAL][CRITICAL] PROCESS_MESSAGE METHOD EXECUTING - This should ALWAYS appear")
             
             # PATRÓN DETECTION FIRST: Detectar patrones especiales ANTES de OpenAI
             # NO añadir al contexto si es un comando especial
             # Detectar si el usuario envía datos de registro
-            if message.startswith("REGISTRO:") or message.startswith("FORM_SUBMISSION:"):
+            if message.startswith("REGISTRO:") or message.startswith("REGISTRO: ") or message.startswith("FORM_SUBMISSION:"):
                 logger.info("[DEBUG] REGISTRATION DATA detected - Processing registration BEFORE OpenAI - UPDATED")
                 logger.info("[DEBUG] ENTERING REGISTRO BLOCK - This should appear for REGISTRO messages")
                 # Extraer datos del formato: REGISTRO:nombre|email|telefono|comunicacion o FORM_SUBMISSION: {"name": "...", ...}
-                if message.startswith("REGISTRO:"):
-                    data_part = message.replace("REGISTRO:", "").strip()
+                if message.startswith("REGISTRO:") or message.startswith("REGISTRO: "):
+                    # Handle both "REGISTRO:" and "REGISTRO: " formats
+                    if message.startswith("REGISTRO: "):
+                        data_part = message.replace("REGISTRO: ", "").strip()
+                    else:
+                        data_part = message.replace("REGISTRO:", "").strip()
                 elif message.startswith("FORM_SUBMISSION:"):
                     data_part = message.replace("FORM_SUBMISSION:", "").strip()
                 
@@ -512,8 +789,31 @@ Cuando el usuario seleccione un servicio:
                     
                     # Respuesta directa sin OpenAI
                     ai_response = tool_response.get("message", f"¡Perfecto {name}! Ya estás registrado como paciente.")
+
+                    # AUTOMÁTICO: Mostrar servicios inmediatamente después del registro
+                    if self.service_tool:
+                        logger.info("[AUTO_SERVICES] Showing services automatically after registration")
+                        service_response = await self.use_service_tool("get_services", context)
+
+                        if service_response and service_response.get("success"):
+                            # Configurar contexto para mostrar catálogo
+                            context.update_context("tool_used", "service_consultation")
+                            context.update_context("tool_response", service_response.get("tool_response", {}))
+                            context.update_context("display_type", "service_catalog")
+                            context.update_context("tool_data", {
+                                "catalog_config": service_response.get("tool_response", {}).get("catalog_config", {})
+                            })
+
+                            # Combinar mensajes
+                            service_message = service_response.get("message", " Aquí tienes nuestros servicios disponibles:")
+                            ai_response = ai_response + " " + service_message
+
+                            logger.info("[AUTO_SERVICES] Services automatically displayed after registration")
+                        else:
+                            logger.warning("[AUTO_SERVICES] Failed to get services after registration")
+
                     context.add_message("assistant", ai_response)
-                    
+
                     logger.info(f"[DEBUG] REGISTRATION SUCCESS - Direct response: {ai_response}")
                     logger.info(f"[DEBUG] Context updated with user_registered=True and user_id={user_id}")
                     # NO agregamos el mensaje REGISTRO: al historial
@@ -670,6 +970,36 @@ Cuando el usuario seleccione un servicio:
                     if tool_response and tool_response.get("success"):
                         logger.info(f"[DEBUG] 🎉 APPOINTMENT CONFIRMED via Pattern Detection")
 
+                        # 📧 ENVIAR EMAIL DE CONFIRMACIÓN AUTOMÁTICAMENTE
+                        if self.email_tool:
+                            try:
+                                logger.info(f"📧 [EMAIL_TRIGGER] Sending confirmation email for appointment {appointment_id}")
+                                email_result = await self.email_tool.send_appointment_confirmation_email(
+                                    user_id=user_id,
+                                    appointment_id=appointment_id,
+                                    email_type="confirmation"
+                                )
+
+                                if email_result.get("success"):
+                                    logger.info(f"✅ [EMAIL_SUCCESS] Confirmation email sent successfully")
+                                    # Agregar información del email a la respuesta
+                                    original_message = tool_response.get("message", "")
+                                    email_notification = email_result.get("user_notification", "")
+                                    if email_notification:
+                                        tool_response["message"] = f"{original_message}\n\n{email_notification}"
+                                else:
+                                    logger.warning(f"⚠️ [EMAIL_WARNING] Email sending failed: {email_result.get('message')}")
+                                    # Agregar mensaje de advertencia pero no fallar la confirmación
+                                    original_message = tool_response.get("message", "")
+                                    warning_message = email_result.get("user_notification", "No se pudo enviar el email de confirmación.")
+                                    tool_response["message"] = f"{original_message}\n\n⚠️ {warning_message}"
+
+                            except Exception as e:
+                                logger.error(f"❌ [EMAIL_ERROR] Error sending confirmation email: {e}")
+                                # No fallar la confirmación por error de email
+                                original_message = tool_response.get("message", "")
+                                tool_response["message"] = f"{original_message}\n\n⚠️ No se pudo enviar el email de confirmación, pero tu cita está confirmada."
+
                         # 🧹 LIMPIEZA COMPLETA: Eliminar TODOS los datos del calendario
                         context.update_context("tool_response", None)
                         context.update_context("available_slots", None)
@@ -717,32 +1047,78 @@ Cuando el usuario seleccione un servicio:
                     context.add_message("assistant", ai_response)
                     return ai_response, context
             
-            # 🔄 OPTIMIZACIÓN: Usuario ya verificado quiere agendar nueva cita
+            # 🔄 OPTIMIZACIÓN: Usuario ya verificado quiere ver servicios
             user_already_verified = context.get_context("user_verified", False) or context.get_context("user_registered", False)
             ready_for_new = context.get_context("ready_for_new_appointment", False)
 
-            # Si el usuario ya está verificado y quiere agendar, mostrar servicios directamente
+            logger.info(f"[SERVICE_CHECK] User already verified: {user_already_verified}")
+            logger.info(f"[SERVICE_CHECK] Message: '{message}'")
+            logger.info(f"[SERVICE_CHECK] Service tool available: {self.service_tool is not None}")
+
+            # Si el usuario ya está verificado y quiere ver servicios o agendar
             if user_already_verified and self.service_tool:
                 intent_detected = self.detectar_intencion(message)
+                logger.info(f"[SERVICE_CHECK] Intent detected: {intent_detected}")
+
+                # Palabras clave ampliadas para detectar solicitud de servicios
+                service_keywords = ['servicios', 'servicio', 'opciones', 'cuales', 'que tienen', 'que ofrecen',
+                                   'mostrar', 'ver', 'listar', 'catalogo', 'disponibles']
                 appointment_keywords = ['cita', 'agendar', 'reservar', 'turno', 'consulta', 'nueva cita', 'otra cita']
 
-                if (intent_detected['intent'] in ['AGENDAR', 'INFO_SERVICIOS'] or
-                    any(word in message.lower() for word in appointment_keywords)):
+                message_lower = message.lower()
+                has_service_keyword = any(word in message_lower for word in service_keywords)
+                has_appointment_keyword = any(word in message_lower for word in appointment_keywords)
 
-                    logger.info("[FAST_TRACK] Verified user wants to schedule - Showing services directly")
+                if (intent_detected['intent'] in ['AGENDAR', 'INFO_SERVICIOS'] or
+                    has_service_keyword or has_appointment_keyword):
+
+                    logger.info("[FAST_TRACK] Verified user wants services - Showing services directly")
+                    logger.info(f"[FAST_TRACK] Triggered by: intent={intent_detected['intent']}, service_kw={has_service_keyword}, appt_kw={has_appointment_keyword}")
 
                     service_response = await self.use_service_tool("get_services", context)
-                    if service_response and service_response.get('success', False):
-                        context.update_context("tool_used", service_response.get('tool_used'))
-                        context.update_context("tool_response", service_response.get('tool_response', {}))
-                        context.update_context("display_type", service_response.get('display_type'))
+                    logger.info(f"[FAST_TRACK] Service response: {service_response}")
+
+                    if service_response:
+                        # Extraer datos del servicio de diferentes posibles ubicaciones
+                        tool_response_data = service_response.get('tool_response', {})
+                        catalog_config = tool_response_data.get('catalog_config', {})
+
+                        # Si no hay catalog_config en tool_response, buscarlo en service_data
+                        if not catalog_config and 'service_data' in service_response:
+                            service_data = service_response.get('service_data', {})
+                            if 'categories' in service_data:
+                                # Construir catalog_config desde service_data si es necesario
+                                catalog_config = {
+                                    "id": "medical_services_catalog",
+                                    "type": "service_grid",
+                                    "title": "🏥 Servicios Médicos Disponibles",
+                                    "subtitle": "Selecciona el servicio que necesitas:",
+                                    "theme": {
+                                        "primary_color": "#059669",
+                                        "background": "#F0FDF4",
+                                        "card_background": "#FFFFFF",
+                                        "border_radius": "16px",
+                                        "grid_columns": 2
+                                    },
+                                    "categories": service_data.get('categories', [])
+                                }
+
+                        context.update_context("tool_used", service_response.get('tool_used', 'service_consultation'))
+                        context.update_context("tool_response", tool_response_data)
+                        context.update_context("display_type", service_response.get('display_type', 'service_catalog'))
+                        context.update_context("tool_data", {
+                            "catalog_config": catalog_config
+                        })
 
                         user_name = context.get_context("user_data", {}).get("name", "")
-                        ai_response = f"¡Perfecto {user_name}! Aquí tienes nuestros servicios disponibles:"
+                        ai_response = service_response.get('message', f"¡Perfecto {user_name}! Aquí tienes nuestros servicios disponibles:")
                         context.add_message("assistant", ai_response)
 
-                        logger.info("[FAST_TRACK] Services displayed for verified user")
+                        logger.info("[FAST_TRACK] Services displayed for verified user - SUCCESS")
                         return ai_response, context
+                    else:
+                        logger.error("[FAST_TRACK] Failed to get service response")
+                        logger.error(f"[FAST_TRACK] Service response details: {service_response}")
 
             # *** DETECCIÓN AUTOMÁTICA DE DATOS PARCIALES - PASO 2 OPTIMIZACIÓN ***
             # Verificar automáticamente si el usuario proporciona email/teléfono
@@ -839,9 +1215,13 @@ Cuando el usuario seleccione un servicio:
                         
                         return ai_response, context
             
+            # PERMITIR QUE OPENAI MANEJE TODO - No más bypass local
+            # OpenAI ahora tiene acceso a todas las herramientas necesarias y puede manejar
+            # tanto usuarios registrados como no registrados apropiadamente
+
             # Si llegamos aquí, es un mensaje normal, lo agregamos al contexto
             context.add_message("user", message)
-            
+
             # Preparar mensajes para OpenAI
             messages = [
                 {"role": "system", "content": self.instructions}
@@ -885,7 +1265,20 @@ Cuando el usuario seleccione un servicio:
             # Preparar herramientas disponibles para OpenAI Function Calling
             tools = []
             if self.tools_available:
-                if self.registration_tool:
+                # SOLO agregar herramienta de registro si el usuario NO está registrado
+                user_is_registered = (
+                    context.get_context("user_registered", False) or
+                    context.get_context("registration_completed", False) or
+                    context.get_context("skip_registration_detection", False)
+                )
+
+                logger.info(f"[TOOLS_CHECK] User registration status check:")
+                logger.info(f"[TOOLS_CHECK]   user_registered: {context.get_context('user_registered', False)}")
+                logger.info(f"[TOOLS_CHECK]   registration_completed: {context.get_context('registration_completed', False)}")
+                logger.info(f"[TOOLS_CHECK]   skip_registration_detection: {context.get_context('skip_registration_detection', False)}")
+                logger.info(f"[TOOLS_CHECK]   Final user_is_registered: {user_is_registered}")
+
+                if self.registration_tool and not user_is_registered:
                     tools.extend([
                         {
                             "type": "function",
@@ -901,14 +1294,18 @@ Cuando el usuario seleccione un servicio:
                             }
                         }
                     ])
+                    logger.info("[OPENAI_TOOLS] Registration tool ADDED - User not registered")
+                else:
+                    logger.info(f"[OPENAI_TOOLS] Registration tool SKIPPED - User registered: {user_is_registered}")
                 
-                if self.verification_tool:
+                # NUEVA: Herramientas de verificación en tiempo real con acceso directo a BD
+                if self.session_verification_tool:
                     tools.extend([
                         {
                             "type": "function",
                             "function": {
                                 "name": "verify_user_by_email",
-                                "description": "Verifica si un usuario está registrado usando su email cuando el usuario dice estar registrado o proporciona un email",
+                                "description": "USAR AUTOMÁTICAMENTE cuando detectes un email. Verifica en tiempo real si el usuario existe en la base de datos y mantiene la sesión actualizada",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -919,10 +1316,10 @@ Cuando el usuario seleccione un servicio:
                             }
                         },
                         {
-                            "type": "function", 
+                            "type": "function",
                             "function": {
                                 "name": "verify_user_by_phone",
-                                "description": "Verifica si un usuario está registrado usando su teléfono cuando el usuario proporciona un número telefónico",
+                                "description": "USAR AUTOMÁTICAMENTE cuando detectes un teléfono. Verifica en tiempo real si el usuario existe en la base de datos y mantiene la sesión actualizada",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -931,16 +1328,32 @@ Cuando el usuario seleccione un servicio:
                                     "required": ["phone"]
                                 }
                             }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "get_current_user_status",
+                                "description": "Obtiene el estado actual del usuario para verificar sesión en cualquier momento",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "conversation_id": {"type": "string", "description": "ID de la conversación actual"}
+                                    },
+                                    "required": ["conversation_id"]
+                                }
+                            }
                         }
                     ])
+                    logger.info("[OPENAI_TOOLS] Real-time session verification tools ADDED")
                 
+                # HERRAMIENTA DE SERVICIOS: Siempre disponible para OpenAI
                 if self.service_tool:
                     tools.extend([
                         {
                             "type": "function",
                             "function": {
                                 "name": "get_available_services",
-                                "description": "Obtiene y muestra catálogo de servicios médicos disponibles cuando el usuario pregunta por servicios, opciones, o qué ofrecen",
+                                "description": "USAR AUTOMÁTICAMENTE después del registro exitoso Y cuando el usuario pregunte por servicios. Muestra catálogo interactivo de servicios médicos disponibles.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -954,6 +1367,7 @@ Cuando el usuario seleccione un servicio:
                             }
                         }
                     ])
+                    logger.info("[OPENAI_TOOLS] Service tool ALWAYS AVAILABLE")
 
                 # 🔧 AGREGADO: Herramientas de agendamiento para OpenAI Function Calling
                 if self.appointment_tool:
@@ -1013,7 +1427,170 @@ Cuando el usuario seleccione un servicio:
                             }
                         }
                     ])
-            
+
+                # 🚀 NUEVA HERRAMIENTA: Agendamiento completo - PRIORITY TOOL
+                if self.booking_tool:
+                    tools.extend([
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "start_booking_process",
+                                "description": "🎯 HERRAMIENTA PRINCIPAL para agendar citas. USAR AUTOMÁTICAMENTE cuando el usuario diga 'quiero agendar', 'necesito una cita', 'agendar consulta', etc. Maneja todo el flujo completo: verificación → servicios → calendario → confirmación.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "user_intent": {
+                                            "type": "string",
+                                            "description": "Intent detected in user message like 'agendar_cita', 'necesito_consulta', etc.",
+                                            "default": "agendar_cita"
+                                        }
+                                    },
+                                    "required": []
+                                }
+                            }
+                        }
+                    ])
+
+                # 🔄 HERRAMIENTAS DE REAGENDAMIENTO
+                if self.reschedule_tool:
+                    tools.extend([
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "start_reschedule_process",
+                                "description": "🔄 USAR AUTOMÁTICAMENTE cuando detectes un ID de cita (24 caracteres hexadecimales como '68d1c0447176386b2af8015f') en el contexto de reagendamiento. OBLIGATORIO: Si encuentras un string de 24 caracteres que parece un ID de cita, usa esta función inmediatamente con ese ID.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "appointment_id": {
+                                            "type": "string",
+                                            "description": "ID de la cita a reagendar (debe estar en el mensaje del usuario o en emails previos)"
+                                        },
+                                        "user_id": {
+                                            "type": "string",
+                                            "description": "ID del usuario (opcional, se puede obtener del contexto)",
+                                            "default": ""
+                                        },
+                                        "user_message": {
+                                            "type": "string",
+                                            "description": "Mensaje original del usuario",
+                                            "default": ""
+                                        }
+                                    },
+                                    "required": ["appointment_id"]
+                                }
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "show_reschedule_calendar",
+                                "description": "Muestra calendario interactivo con horarios disponibles para reagendar. Usado automáticamente después de start_reschedule_process.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "appointment_id": {
+                                            "type": "string",
+                                            "description": "ID de la cita a reagendar"
+                                        },
+                                        "days_ahead": {
+                                            "type": "integer",
+                                            "description": "Días hacia adelante para mostrar slots (default: 7)",
+                                            "default": 7
+                                        }
+                                    },
+                                    "required": ["appointment_id"]
+                                }
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "confirm_reschedule",
+                                "description": "Confirma el reagendamiento con nueva fecha y hora. Actualiza la cita y envía email de notificación.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "appointment_id": {
+                                            "type": "string",
+                                            "description": "ID de la cita a reagendar"
+                                        },
+                                        "new_date": {
+                                            "type": "string",
+                                            "description": "Nueva fecha en formato YYYY-MM-DD"
+                                        },
+                                        "new_time": {
+                                            "type": "string",
+                                            "description": "Nueva hora en formato HH:MM"
+                                        },
+                                        "user_confirmation": {
+                                            "type": "string",
+                                            "description": "Confirmación del usuario (yes/no)",
+                                            "default": "yes"
+                                        }
+                                    },
+                                    "required": ["appointment_id", "new_date", "new_time"]
+                                }
+                            }
+                        }
+                    ])
+
+                # 🚫 Agregar herramientas de cancelación si están disponibles
+                if self.cancellation_tool:
+                    tools.extend([
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "start_cancellation_process",
+                                "description": "🚫 USAR AUTOMÁTICAMENTE cuando detectes un ID de cita (24 caracteres hexadecimales como '68d1c0447176386b2af8015f') en el contexto de cancelación. OBLIGATORIO: Si encuentras un string de 24 caracteres que parece un ID de cita junto con palabras como 'cancelar', 'anular', usa esta función inmediatamente con ese ID.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "appointment_id": {
+                                            "type": "string",
+                                            "description": "ID de la cita a cancelar (24 caracteres hexadecimales)"
+                                        },
+                                        "user_id": {
+                                            "type": "string",
+                                            "description": "ID del usuario (opcional)"
+                                        },
+                                        "user_message": {
+                                            "type": "string",
+                                            "description": "Mensaje original del usuario solicitando cancelación"
+                                        }
+                                    },
+                                    "required": ["appointment_id"]
+                                }
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "confirm_cancellation",
+                                "description": "Confirma y ejecuta la cancelación de la cita. Usado cuando el usuario confirma que desea cancelar.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "appointment_id": {
+                                            "type": "string",
+                                            "description": "ID de la cita a cancelar"
+                                        },
+                                        "cancellation_reason": {
+                                            "type": "string",
+                                            "description": "Razón de la cancelación (opcional)"
+                                        },
+                                        "user_confirmation": {
+                                            "type": "string",
+                                            "description": "Confirmación del usuario (yes/no)",
+                                            "default": "yes"
+                                        }
+                                    },
+                                    "required": ["appointment_id"]
+                                }
+                            }
+                        }
+                    ])
+
             # Llamar a OpenAI con Function Calling si hay herramientas disponibles
             call_params = {
                 "model": self.model_name,
@@ -1027,15 +1604,22 @@ Cuando el usuario seleccione un servicio:
             
             if tools:
                 call_params["tools"] = tools
-                call_params["tool_choice"] = "auto"  # OpenAI decide cuándo usar herramientas
+                # Sin tool_choice - OpenAI usará herramientas según las instrucciones del prompt
             
             logger.info(f"[DEBUG] OPENAI CALL with {len(tools)} tools available")
-            
+            logger.info(f"[DEBUG] Tools list: {[t['function']['name'] for t in tools if 'function' in t]}")
+            logger.info(f"[DEBUG] User message: '{message}'")
+            logger.info(f"[DEBUG] Messages sent to OpenAI: {messages}")
+
             response = self.client.chat.completions.create(**call_params)
-            
+
             # Verificar si OpenAI quiere usar herramientas
             response_message = response.choices[0].message
+            logger.info(f"[DEBUG] OPENAI RESPONSE TEXT: '{response_message.content}'")
+
             tool_calls = response_message.tool_calls
+            logger.info(f"[DEBUG] OPENAI TOOL_CALLS: {tool_calls}")
+            logger.info(f"[DEBUG] HAS TOOL CALLS: {tool_calls is not None and len(tool_calls) > 0 if tool_calls else False}")
             
             if tool_calls:
                 logger.info(f"[DEBUG] OPENAI wants to use {len(tool_calls)} tools")
@@ -1053,22 +1637,27 @@ Cuando el usuario seleccione un servicio:
                         service_response = await self.use_service_tool("get_services", context, 
                                                                      category=function_args.get("category"))
                         
-                        if service_response and service_response.get("tool_response"):
+                        if service_response and service_response.get("success"):
                             # Configurar contexto para mostrar catálogo
                             context.update_context("tool_used", "service_consultation")
                             context.update_context("tool_response", service_response.get("tool_response", {}))
-                            context.update_context("display_type", "service_catalog") 
+                            context.update_context("display_type", "service_catalog")
                             context.update_context("tool_data", {
                                 "catalog_config": service_response.get("tool_response", {}).get("catalog_config", {})
                             })
                             context.update_context("ai_continues_after", True)
-                            
+
                             # Usar mensaje de la herramienta
                             ai_response = service_response.get("message", "Aquí tienes nuestros servicios médicos disponibles:")
-                            
+
                             # Añadir mensaje del AI al historial
                             context.add_message("assistant", ai_response)
-                            
+
+                            return ai_response, context
+                        else:
+                            logger.warning(f"[OPENAI_SERVICES] Failed to get services via OpenAI tool call: {service_response}")
+                            ai_response = "Disculpa, hubo un problema obteniendo los servicios. ¿Puedes intentar nuevamente?"
+                            context.add_message("assistant", ai_response)
                             return ai_response, context
                     
                     elif function_name == "show_registration_form":
@@ -1086,27 +1675,59 @@ Cuando el usuario seleccione un servicio:
                             
                             return ai_response, context
                     
-                    elif function_name == "verify_user_by_email" and self.verification_tool:
-                        # Verificar usuario por email
+                    elif function_name == "verify_user_by_email" and self.session_verification_tool:
+                        # Verificar usuario por email usando la nueva herramienta de tiempo real
                         email = function_args.get("email")
-                        logger.info(f"[DEBUG] Processing verify_user_by_email tool call with email: {email}")
+                        logger.info(f"[DEBUG] Processing verify_user_by_email REAL-TIME tool call with email: {email}")
 
-                        verification_response = await self.verification_tool.verify_user_by_email(email)
+                        verification_response = await self.session_verification_tool.verify_user_by_email(email)
+                        logger.info(f"[DEBUG] Real-time verification response: {verification_response}")
 
                         if verification_response.get("exists"):
-                            # Usuario encontrado - guardar información y continuar a servicios
-                            context.update_context("user_id", verification_response.get("user_id"))
-                            context.update_context("user_name", verification_response.get("user_name"))
-                            context.update_context("user_email", verification_response.get("user_email"))
-                            context.update_context("user_verified", True)
-                            context.update_context("next_step", "proceed_to_appointment")
+                            # Usuario encontrado - actualizar contexto con respuesta completa
+                            context_updates = verification_response.get("context_updates", {})
+                            for key, value in context_updates.items():
+                                context.update_context(key, value)
 
-                            ai_response = verification_response.get("message")
+                            # Configurar para mostrar servicios automáticamente
+                            action_required = verification_response.get("action_required")
+                            if action_required == "show_services":
+                                context.update_context("next_action", "show_services_automatically")
+
+                                # Mostrar servicios inmediatamente
+                                if self.service_tool:
+                                    logger.info("[AUTO_SERVICES] Showing services automatically after email verification")
+                                    service_response = await self.use_service_tool("get_services", context)
+                                    if service_response and service_response.get("success"):
+                                        context.update_context("tool_used", "service_consultation")
+                                        context.update_context("tool_response", service_response.get("tool_response", {}))
+                                        context.update_context("display_type", "service_catalog")
+                                        context.update_context("tool_data", {
+                                            "catalog_config": service_response.get("tool_response", {}).get("catalog_config", {})
+                                        })
+
+                                        # Combinar mensajes
+                                        service_message = service_response.get("message", " Aquí tienes nuestros servicios disponibles:")
+                                        ai_response = verification_response.get("message") + " " + service_message
+
+                                        logger.info("[AUTO_SERVICES] Services automatically displayed after email verification")
+                                    else:
+                                        ai_response = verification_response.get("message")
+                                        logger.warning("[AUTO_SERVICES] Failed to get services after email verification")
+                                else:
+                                    ai_response = verification_response.get("message")
+                            else:
+                                ai_response = verification_response.get("message")
+
                             context.add_message("assistant", ai_response)
 
                             return ai_response, context
                         else:
-                            # Usuario no encontrado - proceder al registro
+                            # Usuario no encontrado - configurar para registro
+                            context_updates = verification_response.get("context_updates", {})
+                            for key, value in context_updates.items():
+                                context.update_context(key, value)
+
                             ai_response = verification_response.get("message")
                             context.add_message("assistant", ai_response)
 
@@ -1160,6 +1781,36 @@ Cuando el usuario seleccione un servicio:
                         if confirmation_response and confirmation_response.get("success"):
                             logger.info(f"[DEBUG] 🎉 APPOINTMENT CONFIRMED via OpenAI Function Calling")
 
+                            # 📧 ENVIAR EMAIL DE CONFIRMACIÓN AUTOMÁTICAMENTE
+                            if self.email_tool:
+                                try:
+                                    logger.info(f"📧 [EMAIL_TRIGGER_OPENAI] Sending confirmation email for appointment {appointment_id}")
+                                    email_result = await self.email_tool.send_appointment_confirmation_email(
+                                        user_id=user_id,
+                                        appointment_id=appointment_id,
+                                        email_type="confirmation"
+                                    )
+
+                                    if email_result.get("success"):
+                                        logger.info(f"✅ [EMAIL_SUCCESS_OPENAI] Confirmation email sent successfully")
+                                        # Agregar información del email a la respuesta
+                                        original_message = confirmation_response.get("message", "")
+                                        email_notification = email_result.get("user_notification", "")
+                                        if email_notification:
+                                            confirmation_response["message"] = f"{original_message}\n\n{email_notification}"
+                                    else:
+                                        logger.warning(f"⚠️ [EMAIL_WARNING_OPENAI] Email sending failed: {email_result.get('message')}")
+                                        # Agregar mensaje de advertencia pero no fallar la confirmación
+                                        original_message = confirmation_response.get("message", "")
+                                        warning_message = email_result.get("user_notification", "No se pudo enviar el email de confirmación.")
+                                        confirmation_response["message"] = f"{original_message}\n\n⚠️ {warning_message}"
+
+                                except Exception as e:
+                                    logger.error(f"❌ [EMAIL_ERROR_OPENAI] Error sending confirmation email: {e}")
+                                    # No fallar la confirmación por error de email
+                                    original_message = confirmation_response.get("message", "")
+                                    confirmation_response["message"] = f"{original_message}\n\n⚠️ No se pudo enviar el email de confirmación, pero tu cita está confirmada."
+
                             # 🧹 LIMPIEZA COMPLETA: Eliminar TODOS los datos del calendario
                             context.update_context("tool_response", None)
                             context.update_context("available_slots", None)
@@ -1191,31 +1842,282 @@ Cuando el usuario seleccione un servicio:
 
                             return ai_response, context
                     
-                    elif function_name == "verify_user_by_phone" and self.verification_tool:
-                        # Verificar usuario por teléfono
+                    elif function_name == "verify_user_by_phone" and self.session_verification_tool:
+                        # Verificar usuario por teléfono usando la nueva herramienta de tiempo real
                         phone = function_args.get("phone")
-                        logger.info(f"[DEBUG] Processing verify_user_by_phone tool call with phone: {phone}")
-                        
-                        verification_response = await self.verification_tool.verify_user_by_phone(phone)
-                        
+                        logger.info(f"[DEBUG] Processing verify_user_by_phone REAL-TIME tool call with phone: {phone}")
+
+                        verification_response = await self.session_verification_tool.verify_user_by_phone(phone)
+                        logger.info(f"[DEBUG] Real-time verification response: {verification_response}")
+
                         if verification_response.get("exists"):
-                            # Usuario encontrado - guardar información y continuar a servicios
-                            context.update_context("user_id", verification_response.get("user_id"))
-                            context.update_context("user_name", verification_response.get("user_name"))
-                            context.update_context("user_phone", verification_response.get("user_phone"))
-                            context.update_context("user_verified", True)
-                            context.update_context("next_step", "proceed_to_appointment")
-                            
+                            # Usuario encontrado - actualizar contexto con respuesta completa
+                            context_updates = verification_response.get("context_updates", {})
+                            for key, value in context_updates.items():
+                                context.update_context(key, value)
+
+                            # Configurar para mostrar servicios automáticamente
+                            action_required = verification_response.get("action_required")
+                            if action_required == "show_services":
+                                context.update_context("next_action", "show_services_automatically")
+
+                                # Mostrar servicios inmediatamente
+                                if self.service_tool:
+                                    service_response = await self.use_service_tool("get_services", context)
+                                    if service_response and service_response.get("tool_response"):
+                                        context.update_context("tool_used", "service_consultation")
+                                        context.update_context("tool_response", service_response.get("tool_response", {}))
+                                        context.update_context("display_type", "service_catalog")
+
                             ai_response = verification_response.get("message")
                             context.add_message("assistant", ai_response)
-                            
+
                             return ai_response, context
                         else:
-                            # Usuario no encontrado - proceder al registro
+                            # Usuario no encontrado - configurar para registro
+                            context_updates = verification_response.get("context_updates", {})
+                            for key, value in context_updates.items():
+                                context.update_context(key, value)
+
                             ai_response = verification_response.get("message")
                             context.add_message("assistant", ai_response)
-                            
+
                             return ai_response, context
+
+                    # 🚀 NUEVA HERRAMIENTA: Agendamiento completo
+                    elif function_name == "start_booking_process" and self.booking_tool:
+                        logger.info(f"[BOOKING_TOOL] 🎯 Processing start_booking_process tool call via OpenAI")
+
+                        # Llamar a la herramienta de agendamiento completo
+                        booking_response = await self.use_booking_tool("start_booking", context)
+                        logger.info(f"[BOOKING_TOOL] Booking response: {booking_response}")
+
+                        if booking_response and booking_response.get("success"):
+                            # Configurar contexto con datos de la herramienta
+                            if booking_response.get("tool_response"):
+                                context.update_context("tool_used", "appointment_booking")
+                                context.update_context("tool_response", booking_response.get("tool_response", {}))
+                                context.update_context("display_type", booking_response.get("display_type", "service_catalog"))
+
+                                # Configurar tool_data para el frontend
+                                context.update_context("tool_data", {
+                                    "catalog_config": booking_response.get("tool_response", {}).get("catalog_config", {})
+                                })
+
+                            ai_response = booking_response.get("message", "Iniciando proceso de agendamiento...")
+                            context.add_message("assistant", ai_response)
+
+                            return ai_response, context
+                        else:
+                            # Error o usuario no autenticado
+                            ai_response = booking_response.get("message", "No pude iniciar el proceso de agendamiento.")
+                            context.add_message("assistant", ai_response)
+
+                            return ai_response, context
+
+                    # 🔄 HERRAMIENTAS DE REAGENDAMIENTO
+                    elif function_name == "start_reschedule_process" and self.reschedule_tool:
+                        logger.info(f"[RESCHEDULE_TOOL] 🔄 Processing start_reschedule_process tool call via OpenAI")
+
+                        appointment_id = function_args.get("appointment_id")
+                        user_id = function_args.get("user_id") or context.get_context("user_id")
+                        user_message = function_args.get("user_message", message)
+
+                        logger.info(f"[RESCHEDULE_TOOL] Args: appointment_id={appointment_id}, user_id={user_id}")
+
+                        reschedule_response = await self.reschedule_tool.start_reschedule_process(
+                            appointment_id=appointment_id,
+                            user_id=user_id,
+                            user_message=user_message
+                        )
+
+                        if reschedule_response and reschedule_response.get("success"):
+                            # Configurar contexto para mostrar información de la cita actual
+                            context.update_context("tool_used", "appointment_reschedule")
+                            context.update_context("tool_response", reschedule_response)
+                            context.update_context("display_type", reschedule_response.get("display_type", "reschedule_current_info"))
+                            context.update_context("reschedule_appointment_id", appointment_id)
+
+                            # Si el próximo paso es mostrar calendario, hacerlo automáticamente
+                            if reschedule_response.get("next_action") == "show_reschedule_calendar":
+                                logger.info("[RESCHEDULE_TOOL] Auto-showing reschedule calendar")
+                                calendar_response = await self.reschedule_tool.show_reschedule_calendar(appointment_id)
+
+                                if calendar_response and calendar_response.get("success"):
+                                    # Actualizar contexto con datos del calendario
+                                    context.update_context("tool_response", calendar_response)
+                                    context.update_context("display_type", "reschedule_calendar")
+                                    context.update_context("tool_data", {
+                                        "calendar_data": calendar_response.get("calendar_data", {})
+                                    })
+
+                                    # Combinar mensajes
+                                    calendar_message = calendar_response.get("message", "")
+                                    combined_message = f"{reschedule_response.get('message', '')} {calendar_message}"
+                                    ai_response = combined_message
+                                else:
+                                    ai_response = reschedule_response.get("message", "Proceso de reagendamiento iniciado.")
+                            else:
+                                ai_response = reschedule_response.get("message", "Proceso de reagendamiento iniciado.")
+
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+                        else:
+                            # Error en el reagendamiento
+                            ai_response = reschedule_response.get("message", "No pude iniciar el reagendamiento.")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+
+                    elif function_name == "show_reschedule_calendar" and self.reschedule_tool:
+                        logger.info(f"[RESCHEDULE_TOOL] 📅 Processing show_reschedule_calendar tool call via OpenAI")
+
+                        appointment_id = function_args.get("appointment_id")
+                        days_ahead = function_args.get("days_ahead", 7)
+
+                        calendar_response = await self.reschedule_tool.show_reschedule_calendar(
+                            appointment_id=appointment_id,
+                            days_ahead=days_ahead
+                        )
+
+                        if calendar_response and calendar_response.get("success"):
+                            # Configurar contexto para mostrar calendario de reagendamiento
+                            context.update_context("tool_used", "appointment_reschedule")
+                            context.update_context("tool_response", calendar_response)
+                            context.update_context("display_type", "reschedule_calendar")
+                            context.update_context("tool_data", {
+                                "calendar_data": calendar_response.get("calendar_data", {})
+                            })
+
+                            ai_response = calendar_response.get("message", "Horarios disponibles para reagendar:")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+                        else:
+                            ai_response = calendar_response.get("message", "No pude mostrar los horarios disponibles.")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+
+                    elif function_name == "confirm_reschedule" and self.reschedule_tool:
+                        logger.info(f"[RESCHEDULE_TOOL] ✅ Processing confirm_reschedule tool call via OpenAI")
+
+                        appointment_id = function_args.get("appointment_id")
+                        new_date = function_args.get("new_date")
+                        new_time = function_args.get("new_time")
+                        user_confirmation = function_args.get("user_confirmation", "yes")
+
+                        logger.info(f"[RESCHEDULE_TOOL] Confirming: {appointment_id} -> {new_date} {new_time}")
+
+                        confirm_response = await self.reschedule_tool.confirm_reschedule(
+                            appointment_id=appointment_id,
+                            new_date=new_date,
+                            new_time=new_time,
+                            user_confirmation=user_confirmation
+                        )
+
+                        if confirm_response and confirm_response.get("success"):
+                            logger.info(f"[RESCHEDULE_TOOL] 🎉 Appointment rescheduled successfully")
+
+                            # Configurar contexto para mostrar confirmación
+                            context.update_context("tool_used", "appointment_reschedule")
+                            context.update_context("tool_response", confirm_response)
+                            context.update_context("display_type", "reschedule_success")
+
+                            # Limpiar contexto del calendario anterior
+                            context.update_context("tool_data", None)
+                            context.update_context("calendar_data", None)
+
+                            ai_response = confirm_response.get("message", "¡Cita reagendada exitosamente!")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+                        else:
+                            ai_response = confirm_response.get("message", "No pude confirmar el reagendamiento.")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+
+                    # 🚫 HERRAMIENTAS DE CANCELACIÓN
+                    elif function_name == "start_cancellation_process" and self.cancellation_tool:
+                        logger.info(f"[CANCELLATION_TOOL] 🚫 Processing start_cancellation_process tool call via OpenAI")
+
+                        appointment_id = function_args.get("appointment_id")
+                        user_id = function_args.get("user_id") or context.get_context("user_id")
+                        user_message = function_args.get("user_message", message)
+
+                        logger.info(f"[CANCELLATION_TOOL] Args: appointment_id={appointment_id}, user_id={user_id}")
+
+                        cancellation_response = await self.cancellation_tool.start_cancellation_process(
+                            appointment_id=appointment_id,
+                            user_id=user_id,
+                            user_message=user_message
+                        )
+
+                        logger.info(f"[CANCELLATION_TOOL] Response: {cancellation_response}")
+
+                        if cancellation_response.get("success"):
+                            display_type = cancellation_response.get("display_type", "cancellation_confirmation")
+
+                            # Actualizar contexto
+                            context.update_context("tool_used", "appointment_cancellation")
+                            context.update_context("display_type", display_type)
+
+                            if cancellation_response.get("cancellation_data"):
+                                context.update_context("tool_data", {
+                                    "cancellation_data": cancellation_response["cancellation_data"]
+                                })
+
+                            ai_response = cancellation_response.get("message", "Información de la cita cargada.")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+                        else:
+                            # Error en la cancelación
+                            ai_response = cancellation_response.get("message", "No pude iniciar el proceso de cancelación.")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+
+                    elif function_name == "confirm_cancellation" and self.cancellation_tool:
+                        logger.info(f"[CANCELLATION_TOOL] ✅ Processing confirm_cancellation tool call via OpenAI")
+
+                        appointment_id = function_args.get("appointment_id")
+                        cancellation_reason = function_args.get("cancellation_reason", "")
+                        user_confirmation = function_args.get("user_confirmation", "yes")
+
+                        logger.info(f"[CANCELLATION_TOOL] Args: appointment_id={appointment_id}, reason={cancellation_reason}")
+
+                        confirm_response = await self.cancellation_tool.confirm_cancellation(
+                            appointment_id=appointment_id,
+                            cancellation_reason=cancellation_reason,
+                            user_confirmation=user_confirmation
+                        )
+
+                        logger.info(f"[CANCELLATION_TOOL] Confirm response: {confirm_response}")
+
+                        if confirm_response.get("success"):
+                            # Actualizar contexto
+                            context.update_context("tool_used", "appointment_cancellation")
+                            context.update_context("display_type", "cancellation_success")
+
+                            # Limpiar contexto de cancelación anterior
+                            context.update_context("tool_data", None)
+                            context.update_context("cancellation_data", None)
+
+                            ai_response = confirm_response.get("message", "¡Cita cancelada exitosamente!")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+                        else:
+                            ai_response = confirm_response.get("message", "No pude confirmar la cancelación.")
+                            context.add_message("assistant", ai_response)
+                            return ai_response, context
+
+                    elif function_name == "get_current_user_status" and self.session_verification_tool:
+                        # Obtener estado actual del usuario
+                        conversation_id = function_args.get("conversation_id", context.conversation_id or "default")
+                        logger.info(f"[DEBUG] Processing get_current_user_status tool call for conversation: {conversation_id}")
+
+                        status_response = await self.session_verification_tool.get_current_user_status(conversation_id)
+                        logger.info(f"[DEBUG] User status response: {status_response}")
+
+                        ai_response = status_response.get("message", "Estado verificado.")
+                        context.add_message("assistant", ai_response)
+
+                        return ai_response, context
                 
                 # Si llegamos aquí, ninguna herramienta fue procesada correctamente
                 ai_response = "Disculpa, hubo un problema procesando tu solicitud. ¿Puedes intentar nuevamente?"
@@ -1233,10 +2135,46 @@ Cuando el usuario seleccione un servicio:
             # Añadir respuesta al contexto
             context.add_message("assistant", ai_response)
             
-            # Analizar intención y decidir si usar herramientas
+            # 🔧 POST-OPENAI: Detectar si el usuario pide servicios y OpenAI no llamó herramientas
             intent_data = self.detectar_intencion(message)
             context.update_context("main_intent", intent_data["intent"])
-            
+
+            # FORZAR herramientas si OpenAI no las usó pero el usuario las necesita
+            service_keywords = ["servicios", "servicio", "que servicios", "qué servicios", "cuales servicios",
+                              "cuáles servicios", "ver servicios", "mostrar servicios", "lista de servicios"]
+
+            message_lower = message.lower().strip()
+            user_wants_services = any(keyword in message_lower for keyword in service_keywords)
+
+            # Verificar si usuario está autenticado
+            user_authenticated = (context.get_context("user_registered") or
+                                context.get_context("user_verified") or
+                                context.get_context("user_id") or
+                                context.get_context("user_data"))
+
+            logger.info(f"[POST_OPENAI] User wants services: {user_wants_services}, User authenticated: {bool(user_authenticated)}")
+
+            if user_wants_services and user_authenticated and self.service_tool:
+                logger.info("[POST_OPENAI] 🎯 FORCING service_consultation tool call - OpenAI missed it!")
+
+                # Forzar uso de la herramienta de servicios
+                service_response = await self.use_service_tool("get_services", context)
+
+                if service_response and service_response.get("success"):
+                    # Configurar contexto para mostrar catálogo
+                    context.update_context("tool_used", "service_consultation")
+                    context.update_context("tool_response", service_response.get("tool_response", {}))
+                    context.update_context("display_type", "service_catalog")
+                    context.update_context("tool_data", {
+                        "catalog_config": service_response.get("tool_response", {}).get("catalog_config", {})
+                    })
+
+                    # Reemplazar la respuesta de OpenAI con la respuesta del catálogo
+                    ai_response = service_response.get("message", "Aquí tienes nuestros servicios disponibles:")
+                    logger.info("[POST_OPENAI] ✅ Service catalog forced successfully!")
+                else:
+                    logger.warning("[POST_OPENAI] ❌ Failed to force service catalog")
+
             # La lógica de herramientas ahora se ejecuta ANTES de OpenAI
             # Solo llegar aquí si no hay patrones especiales detectados
             return ai_response, context

@@ -1,7 +1,8 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import ConnectionFailure
+from pymongo.errors import ConnectionFailure, AutoReconnect, NetworkTimeout
 from typing import Optional
 import logging
+import asyncio
 from .settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -12,34 +13,49 @@ class MongoDatabase:
 
 mongo_db = MongoDatabase()
 
-async def connect_to_mongo():
-    """Create database connection"""
-    try:
-        settings = get_settings()
-        mongo_db.client = AsyncIOMotorClient(
-            settings.mongodb_uri,
-            maxPoolSize=10,
-            minPoolSize=1,
-            maxIdleTimeMS=30000,
-            serverSelectionTimeoutMS=5000,
-        )
-        
-        # Test the connection
-        await mongo_db.client.admin.command('ping')
-        
-        mongo_db.database = mongo_db.client[settings.database_name]
-        
-        logger.info("Successfully connected to MongoDB")
-        
-        # Create indexes
-        await create_indexes()
-        
-    except ConnectionFailure as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error connecting to MongoDB: {e}")
-        raise
+async def connect_to_mongo(retry_count: int = 3, retry_delay: int = 2):
+    """Create database connection with retry logic"""
+    settings = get_settings()
+
+    for attempt in range(retry_count):
+        try:
+            logger.info(f"Attempting to connect to MongoDB (attempt {attempt + 1}/{retry_count})")
+
+            mongo_db.client = AsyncIOMotorClient(
+                settings.mongodb_uri,
+                maxPoolSize=20,  # Increased pool size
+                minPoolSize=5,   # Increased minimum pool
+                maxIdleTimeMS=60000,  # Increased idle time
+                serverSelectionTimeoutMS=10000,  # Increased timeout
+                connectTimeoutMS=20000,  # Connection timeout
+                socketTimeoutMS=20000,   # Socket timeout
+                retryWrites=True,  # Enable automatic retries for writes
+                retryReads=True,   # Enable automatic retries for reads
+            )
+
+            # Test the connection
+            await mongo_db.client.admin.command('ping')
+
+            mongo_db.database = mongo_db.client[settings.database_name]
+
+            logger.info("Successfully connected to MongoDB")
+
+            # Create indexes
+            await create_indexes()
+            return
+
+        except (ConnectionFailure, AutoReconnect, NetworkTimeout) as e:
+            logger.error(f"Failed to connect to MongoDB (attempt {attempt + 1}/{retry_count}): {e}")
+            if attempt < retry_count - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error("Max retry attempts reached. Could not connect to MongoDB")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error connecting to MongoDB: {e}")
+            raise
 
 async def close_mongo_connection():
     """Close database connection"""
@@ -48,9 +64,20 @@ async def close_mongo_connection():
         logger.info("MongoDB connection closed")
 
 async def get_database():
-    """Get database instance"""
+    """Get database instance with automatic reconnection"""
     if mongo_db.database is None:
         await connect_to_mongo()
+
+    # Verify connection is still alive
+    try:
+        await mongo_db.client.admin.command('ping')
+    except (ConnectionFailure, AutoReconnect, NetworkTimeout) as e:
+        logger.warning(f"Lost connection to MongoDB, attempting to reconnect: {e}")
+        await connect_to_mongo()
+    except Exception as e:
+        logger.error(f"Database connection check failed: {e}")
+        await connect_to_mongo()
+
     return mongo_db.database
 
 async def create_indexes():
