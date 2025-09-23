@@ -27,6 +27,7 @@ email-validator==2.0.0
 
 # Date & Time
 python-dateutil==2.9.0
+pytz==2024.1
 
 # CORS
 fastapi-cors==0.0.6
